@@ -63,27 +63,48 @@ def display_mode_selection(
         st.markdown(recommendations['fix_issues'])
         
         if availability['fix_issues']:
+            # Show specific warnings detected
+            st.markdown("**Detected Issues:**")
+            
+            if diagnostics.has_aliasing:
+                st.warning("⚠️ **Aliasing detected** - Some effects are confounded and cannot be separated")
+            
+            if diagnostics.has_high_vif:
+                st.warning("⚠️ **High VIF detected** - Multicollinearity between factors reduces statistical power")
+            
+            if diagnostics.has_lack_of_fit:
+                st.warning("⚠️ **Lack of fit detected** - Current model doesn't adequately explain the data")
+            
+            if diagnostics.has_rank_deficiency:
+                st.error("❌ **Rank deficiency** - Design matrix is singular, model cannot be estimated")
+            
+            if diagnostics.has_insufficient_replication:
+                st.warning("⚠️ **Insufficient replication** - Cannot reliably estimate pure error")
+            
+            st.divider()
+            
             st.markdown("""
             **This mode will:**
-            - Analyze diagnostic results for your design
-            - Identify critical problems (aliasing, rank deficiency, lack of fit, etc.)
-            - Recommend targeted augmentations to fix each issue
+            - Provide targeted augmentations to fix each issue above
             - Prioritize fixes by severity and impact
+            - Show expected improvements after augmentation
             
             **Best for:** Addressing specific statistical problems before proceeding
             """)
             
             if st.button(
                 "🔧 Fix Detected Issues",
-                type="primary" if availability['fix_issues'] else "secondary",
+                type="primary",
                 use_container_width=True,
                 key="mode_a_button"
             ):
                 return 'fix_issues'
         else:
-            st.info(
-                "✅ No critical issues detected. Your design appears adequate. "
-                "Consider Mode B if you want to enhance capabilities."
+            st.success(
+                "✅ **No critical issues detected.**\n\n"
+                "Your design appears statistically sound. "
+                "You can proceed to optimization, or use Mode B to enhance design capabilities "
+                "(e.g., add curvature detection, improve prediction precision, increase robustness)."
             )
     
     # Mode B: Enhance Design

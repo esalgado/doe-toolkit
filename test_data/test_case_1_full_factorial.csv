@@ -1,0 +1,30 @@
+# DOE-TOOLKIT DESIGN
+# Version: 1.0
+# Design Type: full_factorial
+# Generated: 2026-02-14T11:12:15.650624
+# Center Points: 3
+# True Model: Yield = 75 + 5*A + 3*B - 2*C + 4*A*B
+#
+# FACTOR DEFINITIONS
+# Name,Type,Changeability,Levels,Units
+# Temperature,continuous,easy,150|200,°C
+# Pressure,continuous,easy,50|100,psi
+# Time,continuous,easy,10|30,min
+#
+# RESPONSE DEFINITIONS
+# Name,Units
+# Yield,%
+#
+# DESIGN DATA
+StdOrder,RunOrder,Temperature,Pressure,Time,Yield
+1,8,150,50,10,74.0878039950946
+2,3,200,50,10,74.68890532236483
+3,11,150,100,10,72.37957658615447
+4,1,200,100,10,93.06648971660942
+5,6,150,50,30,68.5153025143227
+6,9,200,50,30,70.50128828169825
+7,2,150,100,30,70.17421775916986
+8,7,200,100,30,86.95695855933992
+9,4,175,75,20,73.94368263164635
+10,10,175,75,20,76.22076009806842
+11,5,175,75,20,73.95731019117196

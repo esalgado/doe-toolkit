@@ -399,6 +399,7 @@ def extract_design_data(lines: List[str]) -> pd.DataFrame:
     -------
     pd.DataFrame
         Design data with factor and response columns.
+        Numeric columns are properly converted (handles % symbols).
 
     Raises
     ------
@@ -434,6 +435,22 @@ def extract_design_data(lines: List[str]) -> pd.DataFrame:
 
     if design_data.empty:
         raise CSVParseError("DESIGN DATA section empty")
+
+    # Convert numeric columns properly (handle % symbols and strings)
+    for col in design_data.columns:
+        # Skip metadata columns
+        if col in ['StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase']:
+            continue
+        
+        # Try to convert to numeric, handling percentage symbols
+        if design_data[col].dtype == object:
+            try:
+                # Remove % symbols if present and convert
+                cleaned = design_data[col].str.replace('%', '', regex=False)
+                design_data[col] = pd.to_numeric(cleaned, errors='ignore')
+            except (AttributeError, ValueError):
+                # Not a string column or conversion failed - leave as is
+                pass
 
     return design_data
 

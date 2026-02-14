@@ -109,22 +109,27 @@ if 'model_terms' not in st.session_state or st.session_state['model_terms'] is N
     # Default: Linear model with intercept
     st.session_state['model_terms'] = ['1'] + [f.name for f in factors]
 
-# Get current terms
+# Get current terms from session state
 current_terms = st.session_state.get('model_terms', ['1'])
 
-# Display model builder
+# Display model builder - this shows the UI and returns potentially updated terms
 updated_terms = display_model_builder(
     factors=factors,
-    current_terms=current_terms,
+    current_terms=current_terms.copy(),  # Pass a copy to avoid mutation issues
     response_name="Y",
     key_prefix="step2"
 )
 
-# Update if changed
-if updated_terms != current_terms:
+# Check if terms actually changed
+# Use list comparison (order matters for display)
+terms_changed = (updated_terms != current_terms)
+
+if terms_changed:
+    # Terms changed - update session state immediately
     st.session_state['model_terms'] = updated_terms
-    # Invalidate downstream steps since model changed
-    invalidate_downstream_state(current_step=2)
+    # Invalidate downstream steps since model changed  
+    invalidate_downstream_state(from_step=2)
+    # Rerun to refresh the entire page with new model
     st.rerun()
 
 # ==================== MODEL COMPATIBILITY GUIDANCE ====================

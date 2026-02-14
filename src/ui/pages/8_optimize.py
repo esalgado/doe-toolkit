@@ -14,7 +14,6 @@ sys.path.insert(0, str(project_root))
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
 from typing import Dict, List, Literal
 
 from src.ui.utils.state_management import (
@@ -23,6 +22,10 @@ from src.ui.utils.state_management import (
     can_access_step,
     get_active_design,
     is_using_augmented_design
+)
+from src.ui.utils.plotting import (
+    create_3d_surface_plot,
+    create_contour_plot
 )
 
 # Initialize state
@@ -251,23 +254,24 @@ if optimization_mode == 'single':
                                 else:
                                     grid_design[factor.name] = factor.levels[0]
                         
+                        # Encode grid to coded values before predicting
+                        from src.core.coding import encode_design
+                        grid_design_encoded = encode_design(grid_design, factors)
+                        
                         # Predict
                         results = fitted_models[primary_response]
-                        predictions = results.fitted_model.predict(grid_design)
+                        predictions = results.fitted_model.predict(grid_design_encoded)
                         # Convert Series to numpy array before reshape
                         Z_pred = np.array(predictions).reshape(X.shape)
                         
-                        # Plot
-                        fig = go.Figure(data=[go.Surface(x=X, y=Y, z=Z_pred)])
-                        
-                        fig.update_layout(
-                            title=f"Response Surface: {primary_response}",
-                            scene=dict(
-                                xaxis_title=x_factor,
-                                yaxis_title=y_factor,
-                                zaxis_title=primary_response
-                            ),
-                            height=600
+                        # Create 3D surface plot using centralized utility
+                        fig = create_3d_surface_plot(
+                            x_grid=x_vals,
+                            y_grid=y_vals,
+                            z_mesh=Z_pred,
+                            x_factor_name=x_factor,
+                            y_factor_name=y_factor,
+                            response_name=primary_response
                         )
                         
                         st.plotly_chart(fig, use_container_width=True)
@@ -315,18 +319,23 @@ if optimization_mode == 'single':
                                 if factor.is_continuous():
                                     grid_design[factor.name] = (factor.min_value + factor.max_value) / 2
                         
+                        # Encode grid to coded values before predicting
+                        from src.core.coding import encode_design
+                        grid_design_encoded = encode_design(grid_design, factors)
+                        
                         results = fitted_models[primary_response]
-                        predictions = results.fitted_model.predict(grid_design)
+                        predictions = results.fitted_model.predict(grid_design_encoded)
                         # Convert Series to numpy array before reshape
                         Z_pred = np.array(predictions).reshape(X.shape)
                         
-                        fig = go.Figure(data=go.Contour(x=x_vals, y=y_vals, z=Z_pred))
-                        
-                        fig.update_layout(
-                            title=f"Contour Plot: {primary_response}",
-                            xaxis_title=x_factor,
-                            yaxis_title=y_factor,
-                            height=600
+                        # Create contour plot using centralized utility
+                        fig = create_contour_plot(
+                            x_grid=x_vals,
+                            y_grid=y_vals,
+                            z_mesh=Z_pred,
+                            x_factor_name=x_factor,
+                            y_factor_name=y_factor,
+                            response_name=primary_response
                         )
                         
                         st.plotly_chart(fig, use_container_width=True)

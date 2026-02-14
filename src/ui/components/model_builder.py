@@ -3,9 +3,13 @@ Model Builder Component - JMP-style term selection interface.
 
 Provides visual term building with mathematical notation display.
 """
-from typing import List, Set, Tuple, Optional
+from typing import TYPE_CHECKING, List, Tuple, Optional
 import streamlit as st
-from src.core.factors import Factor, FactorType
+from src.core.factors import Factor
+
+if TYPE_CHECKING:
+    from src.core.analysis import ANOVAAnalysis
+    from src.core.stepwise import StepwiseResults
 
 
 def format_term_for_display(term: str) -> str:
@@ -250,6 +254,10 @@ def display_model_builder(
     # ========== CONDENSED BUILDER + PRESETS SECTION ==========
     
     # Row 1: Factor checkboxes
+    if not factor_names:
+        st.warning("⚠️ No factors available. Please define factors in Step 1 first.")
+        return current_terms
+    
     n_cols = min(6, len(factor_names))
     factor_cols = st.columns(n_cols)
     
@@ -287,14 +295,14 @@ def display_model_builder(
     
     op_row = st.columns([1, 1, 1, 1, 1, 1, 1.5, 1.5])
     
+    # Process button clicks but DON'T return early - let equation display happen
     with op_row[0]:
         if st.button("Main", disabled=not can_main, key=f"{key_prefix}_main", 
                      use_container_width=True, help="Add as main effects"):
             for factor in selected_factors:
                 if factor not in current_terms:
                     current_terms.append(factor)
-            st.session_state[f'{key_prefix}_selected_factors'] = []
-            return current_terms
+            # DON'T return here - continue to display equation
     
     with op_row[1]:
         if st.button("×", disabled=not can_cross, key=f"{key_prefix}_cross",
@@ -302,8 +310,7 @@ def display_model_builder(
             term = '*'.join(sorted(selected_factors))
             if term not in current_terms:
                 current_terms.append(term)
-            st.session_state[f'{key_prefix}_selected_factors'] = []
-            return current_terms
+            # DON'T return here - continue to display equation
     
     with op_row[2]:
         if st.button("²", disabled=not can_power, key=f"{key_prefix}_square",
@@ -311,8 +318,7 @@ def display_model_builder(
             term = f"I({selected_factors[0]}**2)"
             if term not in current_terms:
                 current_terms.append(term)
-            st.session_state[f'{key_prefix}_selected_factors'] = []
-            return current_terms
+            # DON'T return here - continue to display equation
     
     with op_row[3]:
         if st.button("³", disabled=not can_power, key=f"{key_prefix}_cube",
@@ -320,15 +326,14 @@ def display_model_builder(
             term = f"I({selected_factors[0]}**3)"
             if term not in current_terms:
                 current_terms.append(term)
-            st.session_state[f'{key_prefix}_selected_factors'] = []
-            return current_terms
+            # DON'T return here - continue to display equation
     
     # Divider between custom and presets
     with op_row[4]:
         st.markdown("<div style='text-align: center; padding: 0.25rem;'>|</div>", 
                    unsafe_allow_html=True)
     
-    # Preset buttons
+    # Preset buttons - these CAN return early since they replace the entire model
     include_intercept = '1' in current_terms
     
     with op_row[5]:
@@ -339,21 +344,21 @@ def display_model_builder(
                 current_terms = [t for t in current_terms if t != '1']
             else:
                 current_terms.insert(0, '1')
-            return current_terms
+            # DON'T return early for consistency
     
     with op_row[6]:
         if st.button("Linear", key=f"{key_prefix}_linear", use_container_width=True):
             new_terms, warning = get_preset_terms('Linear', factors, include_intercept)
             if warning:
                 st.warning(warning)
-            return new_terms
+            return new_terms  # OK to return - preset buttons replace entire model
     
     with op_row[7]:
         if st.button("Quadratic", key=f"{key_prefix}_quad", use_container_width=True):
             new_terms, warning = get_preset_terms('Quadratic', factors, include_intercept)
             if warning:
                 st.warning(warning)
-            return new_terms
+            return new_terms  # OK to return - preset buttons replace entire model
     
     # Row 3: More presets
     preset_row = st.columns([1, 1, 1, 1, 4])
@@ -363,7 +368,7 @@ def display_model_builder(
             new_terms, warning = get_preset_terms('RSM', factors, include_intercept)
             if warning:
                 st.warning(warning)
-            return new_terms
+            return new_terms  # OK to return - preset buttons replace entire model
     
     with preset_row[1]:
         if st.button("2FI", key=f"{key_prefix}_full2fi", use_container_width=True,
@@ -371,7 +376,7 @@ def display_model_builder(
             new_terms, warning = get_preset_terms('Full Interaction', factors, include_intercept)
             if warning:
                 st.warning(warning)
-            return new_terms
+            return new_terms  # OK to return - preset buttons replace entire model
     
     with preset_row[2]:
         power_input = st.number_input("^", min_value=2, max_value=10, value=2, step=1,
@@ -384,8 +389,7 @@ def display_model_builder(
             term = f"I({selected_factors[0]}**{power_input})"
             if term not in current_terms:
                 current_terms.append(term)
-            st.session_state[f'{key_prefix}_selected_factors'] = []
-            return current_terms
+            # DON'T return here - continue to display equation
     
     st.divider()
     
@@ -514,8 +518,7 @@ def display_stepwise_button(
     It displays a button that, when clicked, runs stepwise selection in the
     background with a progress bar.
     """
-    from src.core.analysis import ANOVAAnalysis, generate_model_terms
-    from src.core.stepwise import stepwise_selection, format_stepwise_summary, StepwiseResults
+    from src.core.stepwise import stepwise_selection, format_stepwise_summary
     
     # Don't show button if no analysis available
     if anova_analysis is None:
