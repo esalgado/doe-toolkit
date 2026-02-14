@@ -1,0 +1,5 @@
+# Build requirements (in addition to requirements.txt)
+# Install these when building the executable
+
+pyinstaller>=6.0.0
+pyinstaller-hooks-contrib>=2023.0

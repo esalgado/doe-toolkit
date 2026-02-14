@@ -54,5 +54,8 @@ data/processed/
 # Logs
 *.log
 
-# PyInstaller
+# PyInstaller build artifacts
+build/
+dist/
 *.spec
+!build_config.spec
