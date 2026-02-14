@@ -18,13 +18,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.core.diagnostics.summary import DesignDiagnosticSummary, QualityReport
+from src.core.diagnostics.summary import DesignDiagnosticSummary, DesignQualityReport
 
 
 def display_diagnostics_tab(
     selected_response: str,
     summary: Optional[DesignDiagnosticSummary],
-    report: Optional[QualityReport],
+    report: Optional[DesignQualityReport],
     factors,
     design,
     responses: Dict,
@@ -41,7 +41,7 @@ def display_diagnostics_tab(
         Name of the currently selected response
     summary : Optional[DesignDiagnosticSummary]
         Computed diagnostic summary, if available
-    report : Optional[QualityReport]
+    report : Optional[DesignQualityReport]
         Quality report, if available
     factors : list
         List of Factor objects
@@ -77,7 +77,7 @@ def display_diagnostics_tab(
 def _display_computed_diagnostics(
     selected_response: str,
     summary: DesignDiagnosticSummary,
-    report: QualityReport,
+    report: DesignQualityReport,
     format_term_for_display,
 ) -> None:
     """Display diagnostics when they have been computed."""

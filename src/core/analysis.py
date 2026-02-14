@@ -185,6 +185,21 @@ def prepare_analysis_data(
     factor_names = [f.name for f in factors]
     print("DEBUG[prepare_analysis_data]: factor_names =", factor_names)
     print("DEBUG[prepare_analysis_data]: design.columns =", list(design.columns))
+    print("\n" + "="*80)
+    print("DEBUG: DESIGN VALUES (first 3 rows):")
+    print("="*80)
+    for fname in factor_names:
+        print(f"{fname}: {design[fname].head(3).tolist()}")
+    print("\n" + "="*80)
+    print("DEBUG: FACTOR DEFINITIONS:")
+    print("="*80)
+    for f in factors:
+        print(f"{f.name}: type={f.factor_type.value}, levels={f.levels}")
+    print("\n" + "="*80)
+    print("DEBUG: RESPONSE VALUES (first 5):")
+    print("="*80)
+    print(response[:5])
+    print("="*80 + "\n")
 
     try:
         # This is where pandas might be throwing the ValueError
@@ -268,6 +283,12 @@ class ANOVAAnalysis:
             design, response, factors, response_name
         )
         self.rename_map = {}
+        
+        # Debug: print first few rows of data
+        print(f"DEBUG[ANOVAAnalysis.__init__]: First 5 rows of analysis data:")
+        print(self.data.head())
+        print(f"DEBUG[ANOVAAnalysis.__init__]: Data dtypes:")
+        print(self.data.dtypes)
 
 
         self.design_structure = detect_split_plot_structure(design, factors)
@@ -305,6 +326,13 @@ class ANOVAAnalysis:
     def _fit_fixed_effects_model(self, model_terms: List[str]) -> ANOVAResults:
         """Fit fixed effects ANOVA."""
         formula = self._build_formula(model_terms)
+        
+        # Debug: print data statistics
+        print(f"DEBUG[_fit_fixed_effects_model]: formula = {formula}")
+        print(f"DEBUG[_fit_fixed_effects_model]: response stats: min={self.data[self.response_name].min():.4f}, max={self.data[self.response_name].max():.4f}, mean={self.data[self.response_name].mean():.4f}")
+        for col in self.data.columns:
+            if col != self.response_name and col not in ['Block', 'WholePlot', 'RunOrder', 'StdOrder']:
+                print(f"DEBUG[_fit_fixed_effects_model]: {col} stats: min={self.data[col].min():.4f}, max={self.data[col].max():.4f}, dtype={self.data[col].dtype}")
         
         if self.design_structure['has_blocking'] and not self.block_as_random:
             formula += " + C(Block)"

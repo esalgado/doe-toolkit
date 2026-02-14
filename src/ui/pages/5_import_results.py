@@ -1,12 +1,8 @@
 """
-Step 4: Import Experimental Results (with CSV Metadata Support)
+Step 5: Import Experimental Results (DOE-Toolkit CSV Only)
 
-NEW FEATURES:
-- Parse CSV with DOE-Toolkit metadata headers
-- Import response definitions from CSV
-- Compare factors with session (show mismatch dialog)
-- Three import paths: fresh session, active session, response-only
-- Graceful fallback for plain CSVs
+Simplified import workflow - only accepts DOE-Toolkit formatted CSVs with metadata.
+Users must use the template format for all imports.
 """
 import sys
 from pathlib import Path
@@ -14,26 +10,20 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Tuple, Optional
+import streamlit as st  # noqa: E402
+import pandas as pd  # noqa: E402
+import numpy as np  # noqa: E402
+from typing import Dict, List, Optional
 
 from src.ui.utils.state_management import (
     initialize_session_state,
     invalidate_downstream_state
 )
-from src.core.factors import (
-    Factor, 
-    FactorType, 
-    ChangeabilityLevel,
-    sanitize_factor_name
-)
+from src.core.factors import Factor, FactorType
 from src.ui.utils.csv_parser import (
     parse_doe_csv,
     validate_csv_structure,
-    ParseResult,
-    CSVParseError
+    ParseResult
 )
 
 
@@ -85,6 +75,7 @@ def extract_responses_from_design(
     
     return responses
 
+
 # Initialize state
 initialize_session_state()
 
@@ -92,7 +83,17 @@ initialize_session_state()
 from src.ui.components.sidebar import build_standard_sidebar
 build_standard_sidebar()
 
-st.title("Step 4: Import Experimental Results")
+st.title("Step 5: Import Experimental Results")
+
+st.info(
+    "📋 **DOE-Toolkit CSV Format Required**\n\n"
+    "This page only accepts CSVs exported from DOE-Toolkit or created using our template format. "
+    "The CSV must include metadata headers defining factors and responses.\n\n"
+    "To create a compatible CSV:\n"
+    "1. Export your design from Step 4 (Preview Design)\n"
+    "2. Add your experimental results to the response columns\n"
+    "3. Upload the completed file here"
+)
 
 # Show current data status if exists
 if st.session_state.get('design') is not None and st.session_state.get('responses'):
@@ -117,64 +118,99 @@ if st.session_state.get('design') is not None and st.session_state.get('response
 st.divider()
 
 # File upload
-st.subheader("📤 Upload Results CSV")
+st.subheader("📤 Upload DOE-Toolkit CSV")
 
 uploaded_file = st.file_uploader(
-    "Choose CSV file (with or without DOE-Toolkit metadata)",
+    "Choose a DOE-Toolkit formatted CSV file",
     type=['csv'],
-    key='results_upload'
+    key='results_upload',
+    help="Must be a CSV exported from DOE-Toolkit with metadata headers"
 )
 
 if uploaded_file:
     # Read file content
     file_content = uploaded_file.getvalue().decode('utf-8')
     
-    # Try to parse as DOE-Toolkit format
+    # Parse as DOE-Toolkit format
     parse_result = parse_doe_csv(file_content)
     
     if parse_result.is_valid:
-        st.success("✓ CSV with DOE-Toolkit metadata detected!")
+        st.success("✓ Valid DOE-Toolkit CSV detected!")
         
         # Determine import path
         has_session_design = st.session_state.get('design') is not None
         has_session_factors = len(st.session_state.get('factors', [])) > 0
         
-        # PATH 1: Fresh session (no design yet)
+        # Show summary metrics
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Factors in CSV", len(parse_result.factors))
+        with col2:
+            response_count = len(parse_result.response_definitions) if parse_result.response_definitions else 0
+            st.metric("Responses in CSV", response_count)
+        
+        st.divider()
+        
+        # Display factor summary table
+        st.markdown("### 📋 Factors")
+        factor_table_data = []
+        for factor in parse_result.factors:
+            if factor.factor_type == FactorType.CONTINUOUS:
+                levels_display = f"[{factor.min_value}, {factor.max_value}]"
+            elif factor.factor_type == FactorType.DISCRETE_NUMERIC:
+                levels_display = ", ".join(str(v) for v in factor.levels)
+            else:  # CATEGORICAL
+                levels_display = ", ".join(str(v) for v in factor.levels)
+            
+            factor_table_data.append({
+                'Name': factor.name,
+                'Type': factor.factor_type.value,
+                'Levels/Range': levels_display,
+                'Units': factor.units or '',
+                'Changeability': factor.changeability.value
+            })
+        
+        st.dataframe(
+            pd.DataFrame(factor_table_data),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Display response summary table
+        if parse_result.response_definitions:
+            st.markdown("### 📊 Responses")
+            response_table_data = []
+            for resp in parse_result.response_definitions:
+                response_table_data.append({
+                    'Name': resp['name'],
+                    'Units': resp.get('units', '') or ''
+                })
+            
+            st.dataframe(
+                pd.DataFrame(response_table_data),
+                use_container_width=True,
+                hide_index=True
+            )
+        
+        # Show design data preview
+        with st.expander("🔍 Design Data Preview (first 10 rows)", expanded=False):
+            st.dataframe(parse_result.design_data.head(10), use_container_width=True)
+        
+        st.divider()
+        
+        # PATH 1: Fresh session (no existing design)
         if not has_session_design:
-            st.info("📌 **Fresh Session Import** - Loading factors and design from CSV")
+            st.markdown("### ✅ Ready to Import")
+            st.caption("This will load the factors, design, and responses into the current session.")
             
-            # Show factor summary
-            with st.expander("📋 Factors to Import", expanded=True):
-                st.write(f"**{len(parse_result.factors)} factors found:**")
-                for factor in parse_result.factors:
-                    if factor.factor_type == FactorType.CONTINUOUS:
-                        st.caption(f"• {factor.name}: continuous [{factor.min_value}, {factor.max_value}] {factor.units or ''}")
-                    elif factor.factor_type == FactorType.DISCRETE_NUMERIC:
-                        st.caption(f"• {factor.name}: discrete {factor.discrete_values} {factor.units or ''}")
-                    else:  # CATEGORICAL
-                        st.caption(f"• {factor.name}: categorical {factor.categorical_levels} {factor.units or ''}")
-            
-            # Show response summary
-            if parse_result.response_definitions:
-                with st.expander("📊 Responses to Import", expanded=True):
-                    st.write(f"**{len(parse_result.response_definitions)} responses found:**")
-                    for resp in parse_result.response_definitions:
-                        units_str = f" ({resp['units']})" if resp['units'] else ""
-                        st.caption(f"• {resp['name']}{units_str}")
-            
-            # Show design preview
-            with st.expander("🔍 Design Data Preview", expanded=True):
-                st.dataframe(parse_result.design_data.head(10), use_container_width=True)
-            
-            # Import button
-            if st.button("✅ Import Design + Factors + Responses", type="primary", use_container_width=True):
+            if st.button("📥 Import All Data", type="primary", use_container_width=True):
                 # Load into session
                 st.session_state['factors'] = parse_result.factors
                 st.session_state['design'] = parse_result.design_data
                 st.session_state['response_definitions'] = parse_result.response_definitions
                 st.session_state['design_metadata'] = parse_result.metadata
                 
-                # Extract responses using helper function
+                # Extract responses
                 responses = extract_responses_from_design(
                     parse_result.design_data,
                     parse_result.factors,
@@ -185,38 +221,37 @@ if uploaded_file:
                     st.session_state['responses'] = responses
                     st.session_state['response_names'] = list(responses.keys())
                     st.success(f"✓ Imported {len(parse_result.factors)} factors, {len(responses)} responses")
+                    st.info("👉 Data loaded! Click 'Analyze Results →' below to continue.")
                 else:
-                    st.warning("⚠️ No response data found in CSV (empty columns)")
-                    st.info("You can add response data in Step 5 (Analyze)")
+                    # Still set empty responses to maintain consistency
+                    st.session_state['responses'] = {}
+                    st.session_state['response_names'] = []
+                    st.warning("⚠️ No response data found in CSV (columns are empty)")
+                    st.info("👉 Design imported! You can view the design or add response data later. Click 'Analyze Design →' below.")
                 
                 st.rerun()
         
-        # PATH 2: Active session with factors
+        # PATH 2: Active session with existing factors
         elif has_session_factors:
-            st.info("📌 **Factor Comparison** - Checking CSV factors against session factors")
+            st.markdown("### 🔄 Factor Comparison")
             
             # Validate factor compatibility
             is_valid, errors = validate_csv_structure(parse_result, st.session_state.get('factors'))
             
             if is_valid:
-                st.success("✓ Factors match! Proceeding with import...")
-                
-                # Show design preview
-                with st.expander("🔍 Design + Response Data Preview", expanded=True):
-                    st.dataframe(parse_result.design_data.head(10), use_container_width=True)
+                st.success("✓ CSV factors match session factors!")
                 
                 # Check for response mismatch
                 session_responses = set(st.session_state.get('responses', {}).keys())
                 csv_responses = {r['name'] for r in parse_result.response_definitions}
                 
                 if csv_responses and session_responses and csv_responses != session_responses:
-                    st.warning(f"⚠️ Response names differ:")
-                    st.caption(f"Session has: {session_responses}")
-                    st.caption(f"CSV has: {csv_responses}")
+                    st.warning("⚠️ Response names differ:")
+                    st.caption(f"Session: {', '.join(sorted(session_responses))}")
+                    st.caption(f"CSV: {', '.join(sorted(csv_responses))}")
                 
-                # Import button
-                if st.button("✅ Import Results (Keep Factors)", type="primary", use_container_width=True):
-                    # Extract responses using helper function
+                if st.button("📥 Import Results (Keep Session Factors)", type="primary", use_container_width=True):
+                    # Extract responses
                     responses = extract_responses_from_design(
                         parse_result.design_data,
                         st.session_state['factors'],
@@ -228,61 +263,52 @@ if uploaded_file:
                         st.session_state['response_names'] = list(responses.keys())
                         st.session_state['response_definitions'] = parse_result.response_definitions
                         st.success(f"✓ Imported {len(responses)} response(s)")
+                        st.info("👉 Results loaded! Click 'Analyze Results →' below to continue.")
                     else:
-                        st.warning("No response data in CSV")
+                        # Set empty responses to maintain consistency
+                        st.session_state['responses'] = {}
+                        st.session_state['response_names'] = []
+                        st.warning("⚠️ No response data in CSV")
+                        st.info("👉 Click 'Analyze Design →' to view design structure.")
                     
                     st.rerun()
             
             else:
-                # MISMATCH DIALOG
+                # Factor mismatch - show comparison
                 st.error("❌ Factor mismatch detected!")
                 
-                with st.expander("🔍 Comparison Details", expanded=True):
-                    for error in errors:
-                        st.error(f"• {error}")
+                st.markdown("**Differences:**")
+                for error in errors:
+                    st.error(f"• {error}")
                 
-                # Show factor comparison table
-                st.markdown("**Factor Comparison:**")
+                # Show comparison table
                 comparison_data = []
-                
-                for i, csv_factor in enumerate(parse_result.factors):
-                    if i < len(st.session_state['factors']):
-                        session_factor = st.session_state['factors'][i]
-                        comparison_data.append({
-                            'CSV Factor': csv_factor.name,
-                            'Session Factor': session_factor.name,
-                            'Match': '✓' if csv_factor.name == session_factor.name else '✗'
-                        })
-                    else:
-                        comparison_data.append({
-                            'CSV Factor': csv_factor.name,
-                            'Session Factor': '—',
-                            'Match': '✗'
-                        })
+                for i in range(max(len(parse_result.factors), len(st.session_state['factors']))):
+                    csv_name = parse_result.factors[i].name if i < len(parse_result.factors) else '—'
+                    session_name = st.session_state['factors'][i].name if i < len(st.session_state['factors']) else '—'
+                    
+                    comparison_data.append({
+                        'CSV Factor': csv_name,
+                        'Session Factor': session_name,
+                        'Match': '✓' if csv_name == session_name and csv_name != '—' else '✗'
+                    })
                 
                 st.dataframe(pd.DataFrame(comparison_data), use_container_width=True)
                 
                 st.divider()
                 
-                # User chooses resolution
-                st.subheader("How would you like to proceed?")
+                # Resolution options
+                st.markdown("### How to proceed:")
                 
-                resolution = st.radio(
-                    "Resolution strategy:",
-                    [
-                        "Use CSV factors (replace session)",
-                        "Use session factors (skip CSV factors)",
-                        "Cancel import"
-                    ],
-                    label_visibility="collapsed"
-                )
+                col1, col2 = st.columns(2)
                 
-                if resolution == "Use CSV factors (replace session)":
-                    if st.button("✅ Replace Factors & Import", type="primary", use_container_width=True):
+                with col1:
+                    if st.button("🔄 Replace Session with CSV Factors", use_container_width=True):
                         st.session_state['factors'] = parse_result.factors
                         st.session_state['design'] = parse_result.design_data
+                        st.session_state['response_definitions'] = parse_result.response_definitions
                         
-                        # Extract responses using helper function
+                        # Extract responses
                         responses = extract_responses_from_design(
                             parse_result.design_data,
                             parse_result.factors,
@@ -292,81 +318,39 @@ if uploaded_file:
                         if responses:
                             st.session_state['responses'] = responses
                             st.session_state['response_names'] = list(responses.keys())
-                            st.session_state['response_definitions'] = parse_result.response_definitions
-                            st.success(f"✓ Replaced factors and imported {len(responses)} response(s)")
+                            st.success(f"✓ Replaced with {len(parse_result.factors)} factors, {len(responses)} responses")
                         
                         st.rerun()
                 
-                elif resolution == "Use session factors (skip CSV factors)":
-                    if st.button("✅ Import Responses Only", type="primary", use_container_width=True):
-                        # Extract responses using helper function
-                        responses = extract_responses_from_design(
-                            parse_result.design_data,
-                            st.session_state['factors'],
-                            parse_result.response_definitions
-                        )
-                        
-                        if responses:
-                            st.session_state['responses'] = responses
-                            st.session_state['response_names'] = list(responses.keys())
-                            st.session_state['response_definitions'] = parse_result.response_definitions
-                            st.success(f"✓ Imported {len(responses)} response(s) (factors unchanged)")
-                        else:
-                            st.warning("No response data to import")
-                        
-                        st.rerun()
+                with col2:
+                    if st.button("📤 Re-upload Corrected CSV", use_container_width=True):
+                        st.info("Please upload a CSV that matches your session factors, or start a new session.")
     
     else:
-        # FALLBACK: Plain CSV without metadata
-        st.warning("⚠️ CSV format not recognized as DOE-Toolkit metadata format")
+        # Invalid CSV format
+        st.error("❌ Invalid CSV Format")
+        st.markdown(
+            "This file is **not** a valid DOE-Toolkit formatted CSV.\n\n"
+            "**Required format:**\n"
+            "- Must include metadata headers (# DOE-TOOLKIT DESIGN)\n"
+            "- Must define factors in metadata block\n"
+            "- Must define responses in metadata block\n"
+            "- Must include design data section"
+        )
         
-        # Show parse error for debugging
         if parse_result.error:
-            with st.expander("🔍 Parse Error Details", expanded=False):
-                st.error(f"**Error:** {parse_result.error}")
-                st.caption("If you believe this is a valid DOE-Toolkit format file, please report this issue.")
+            with st.expander("🔍 Parse Error Details"):
+                st.code(parse_result.error)
         
-        st.info("Attempting to parse as plain CSV...")
+        st.divider()
         
-        try:
-            # Try basic parsing
-            csv_df = pd.read_csv(uploaded_file)
-            
-            st.success(f"✓ Plain CSV loaded: {len(csv_df)} rows, {len(csv_df.columns)} columns")
-            
-            with st.expander("📋 Data Preview", expanded=True):
-                st.dataframe(csv_df.head(10), use_container_width=True)
-            
-            # For plain CSV, guide user through mapping
-            st.subheader("Map Columns to Responses")
-            
-            factor_cols = set(st.session_state.get('factor_names', []))
-            meta_cols = {'StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase'}
-            potential_response_cols = [c for c in csv_df.columns if c not in factor_cols and c not in meta_cols]
-            
-            if potential_response_cols:
-                st.write(f"**{len(potential_response_cols)} potential response column(s) detected:**")
-                
-                responses = {}
-                for col in potential_response_cols:
-                    # Check if numeric
-                    if pd.api.types.is_numeric_dtype(csv_df[col]):
-                        st.caption(f"✓ {col} (numeric)")
-                        responses[col] = csv_df[col].values
-                    else:
-                        st.caption(f"⚠️ {col} (non-numeric, skipping)")
-                
-                if responses and st.button("✅ Import as Responses", type="primary", use_container_width=True):
-                    st.session_state['responses'] = responses
-                    st.session_state['response_names'] = list(responses.keys())
-                    st.success(f"✓ Imported {len(responses)} response(s)")
-                    st.rerun()
-            
-            else:
-                st.warning("No identifiable response columns found")
-        
-        except Exception as e:
-            st.error(f"Failed to parse CSV: {e}")
+        st.markdown("### 📝 How to create a valid CSV:")
+        st.markdown(
+            "1. **Option A:** Export your design from Step 4 (Preview Design)\n"
+            "2. **Option B:** Download the CSV template (coming soon)\n"
+            "3. Add your experimental results to the response columns\n"
+            "4. Upload the completed file here"
+        )
 
 # Navigation
 st.divider()
@@ -378,7 +362,28 @@ with col1:
         st.switch_page("pages/4_preview_design.py")
 
 with col3:
-    if st.session_state.get('responses'):
-        if st.button("Analyze Results →", type="primary", use_container_width=True):
-            st.session_state['current_step'] = 6
-            st.switch_page("pages/6_analyze.py")
+    # Enable navigation if we have either design or responses loaded
+    has_design = st.session_state.get('design') is not None
+    has_responses = st.session_state.get('responses') is not None and len(st.session_state.get('responses', {})) > 0
+    can_proceed = has_design or has_responses
+    
+    # Determine button text and help based on state
+    if not can_proceed:
+        button_text = "Import Data First →"
+        help_text = "Upload and import a DOE-Toolkit CSV to continue"
+    elif has_design and not has_responses:
+        button_text = "Analyze Design →"
+        help_text = "View design without response data"
+    else:
+        button_text = "Analyze Results →"
+        help_text = "Analyze experimental results"
+    
+    if st.button(
+        button_text,
+        type="primary", 
+        use_container_width=True,
+        disabled=not can_proceed,
+        help=help_text
+    ):
+        st.session_state['current_step'] = 6
+        st.switch_page("pages/6_analyze.py")

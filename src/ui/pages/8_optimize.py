@@ -254,9 +254,13 @@ if optimization_mode == 'single':
                                 else:
                                     grid_design[factor.name] = factor.levels[0]
                         
+                        # Encode grid to coded values before predicting
+                        from src.core.coding import encode_design
+                        grid_design_encoded = encode_design(grid_design, factors)
+                        
                         # Predict
                         results = fitted_models[primary_response]
-                        predictions = results.fitted_model.predict(grid_design)
+                        predictions = results.fitted_model.predict(grid_design_encoded)
                         # Convert Series to numpy array before reshape
                         Z_pred = np.array(predictions).reshape(X.shape)
                         
@@ -315,8 +319,12 @@ if optimization_mode == 'single':
                                 if factor.is_continuous():
                                     grid_design[factor.name] = (factor.min_value + factor.max_value) / 2
                         
+                        # Encode grid to coded values before predicting
+                        from src.core.coding import encode_design
+                        grid_design_encoded = encode_design(grid_design, factors)
+                        
                         results = fitted_models[primary_response]
-                        predictions = results.fitted_model.predict(grid_design)
+                        predictions = results.fitted_model.predict(grid_design_encoded)
                         # Convert Series to numpy array before reshape
                         Z_pred = np.array(predictions).reshape(X.shape)
                         

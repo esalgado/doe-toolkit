@@ -1,0 +1,27 @@
+# DOE-TOOLKIT DESIGN
+# Version: 1.0
+# Design Type: full_factorial
+# Generated: 2026-02-14T11:12:17.621903
+# True Model: Response = 60 + 5*A + 8*A*B + 2*C
+# Note: B not significant but A*B is - test hierarchy enforcement
+#
+# FACTOR DEFINITIONS
+# Name,Type,Changeability,Levels,Units
+# A,continuous,easy,10|20,
+# B,continuous,easy,100|200,
+# C,continuous,easy,5|15,
+#
+# RESPONSE DEFINITIONS
+# Name,Units
+# Response,
+#
+# DESIGN DATA
+StdOrder,RunOrder,A,B,C,Response
+1,5,10,100,5,61.77680982662331
+2,2,20,100,5,56.551883715187316
+3,7,10,200,5,43.828684528527845
+4,1,20,200,5,71.3106857456723
+5,8,10,100,15,62.32875143940322
+6,3,20,100,15,57.63394807339693
+7,6,10,200,15,50.29165011584062
+8,4,20,200,15,74.46091235656392

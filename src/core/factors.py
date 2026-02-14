@@ -266,13 +266,12 @@ References
 
 
 
-# Patsy reserved words that have special meaning
-PATSY_RESERVED: Set[str] = {
-    'I',     # Identity function (prevents interpretation)
-    'C',     # Categorical encoding
-    'Q',     # Quote function (backtick alternative)
-    'T',     # Treatment encoding (deprecated but still reserved)
-}
+# Patsy reserved words that have special meaning when used as functions
+# Note: Single letters like C, I, Q, T are only reserved when used with parentheses
+# e.g., C(x) or I(x**2), not when used as simple factor names
+# Intentionally empty - single letters are safe as factor names
+# They only cause issues when used with function notation: C(factor), I(x**2)
+PATSY_RESERVED: Set[str] = set()
 
 # Common numpy/pandas names that might cause confusion
 COMMON_RESERVED: Set[str] = {
@@ -280,7 +279,7 @@ COMMON_RESERVED: Set[str] = {
 }
 
 # Combine all reserved words
-ALL_RESERVED: Set[str] = PATSY_RESERVED | COMMON_RESERVED
+ALL_RESERVED: Set[str] = PATSY_RESERVED.union(COMMON_RESERVED)
 
 
 def sanitize_factor_name(name: str) -> Tuple[str, bool]:

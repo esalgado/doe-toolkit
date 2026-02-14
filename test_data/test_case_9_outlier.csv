@@ -1,0 +1,27 @@
+# DOE-TOOLKIT DESIGN
+# Version: 1.0
+# Design Type: full_factorial
+# Generated: 2026-02-14T11:12:17.621903
+# True Model: Quality = 70 + 6*A + 4*B - 2*C + 3*A*B
+# Outlier: Run 5 is outlier (40 vs expected 78)
+#
+# FACTOR DEFINITIONS
+# Name,Type,Changeability,Levels,Units
+# A,continuous,easy,100|200,
+# B,continuous,easy,50|150,
+# C,continuous,easy,10|30,
+#
+# RESPONSE DEFINITIONS
+# Name,Units
+# Quality,score
+#
+# DESIGN DATA
+StdOrder,RunOrder,A,B,C,Quality
+1,1,100,50,10,66.57219656189262
+2,2,200,50,10,71.76390320524263
+3,3,100,150,10,70.66412569314274
+4,4,200,150,10,85.15940123125831
+5,5,100,50,30,40.0
+6,6,200,50,30,66.95373026083296
+7,7,100,150,30,61.78660031115668
+8,8,200,150,30,82.58303160131717

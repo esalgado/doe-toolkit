@@ -127,7 +127,17 @@ def dataframe_to_factors(df: pd.DataFrame) -> tuple[List[Factor], List[str]]:
                 })
             
             # Parse type
-            factor_type_str = str(row['Type']).strip().lower()
+            type_value = row['Type']
+            
+            # Handle both string and list formats (st.data_editor can return either)
+            if isinstance(type_value, list):
+                if len(type_value) > 0:
+                    factor_type_str = str(type_value[0]).strip().lower()
+                else:
+                    errors.append(f"Row {idx+1}: Type cannot be empty")
+                    continue
+            else:
+                factor_type_str = str(type_value).strip().lower()
             
             if factor_type_str == 'continuous':
                 factor_type = FactorType.CONTINUOUS
@@ -136,7 +146,7 @@ def dataframe_to_factors(df: pd.DataFrame) -> tuple[List[Factor], List[str]]:
             elif factor_type_str == 'categorical':
                 factor_type = FactorType.CATEGORICAL
             else:
-                errors.append(f"Row {idx+1}: Invalid type '{row['Type']}' (cleaned: '{factor_type_str}')")
+                errors.append(f"Row {idx+1}: Invalid type '{type_value}' (cleaned: '{factor_type_str}')")
                 continue
             
             # Parse levels
@@ -186,7 +196,16 @@ def dataframe_to_factors(df: pd.DataFrame) -> tuple[List[Factor], List[str]]:
                         continue
             
             # Parse changeability
-            change_str = str(row['Changeability']).strip().lower()
+            change_value = row['Changeability']
+            
+            # Handle both string and list formats (st.data_editor can return either)
+            if isinstance(change_value, list):
+                if len(change_value) > 0:
+                    change_str = str(change_value[0]).strip().lower()
+                else:
+                    change_str = 'easy'  # Default if empty
+            else:
+                change_str = str(change_value).strip().lower()
             
             if change_str == 'easy':
                 changeability = ChangeabilityLevel.EASY

@@ -171,7 +171,6 @@ def _display_profiler_grid(
                         results,
                         selected_response,
                         col_idx,
-                        factors,
                     )
 
 
@@ -200,10 +199,7 @@ def _display_continuous_factor(
     # Calculate 95% CI
     trace_df = pd.DataFrame(trace_data)
     try:
-        # Encode trace data for CI calculation
-        from src.core.coding import encode_design
-        trace_df_encoded = encode_design(trace_df, factors)
-        pred_obj = results.fitted_model.get_prediction(trace_df_encoded)
+        pred_obj = results.fitted_model.get_prediction(trace_df)
         pred_summary = pred_obj.summary_frame(alpha=0.05)
         ci_lower = pred_summary["mean_ci_lower"].values
         ci_upper = pred_summary["mean_ci_upper"].values
@@ -282,7 +278,7 @@ def _display_continuous_factor(
     )
 
     fig = apply_plot_style(fig)
-    st.plotly_chart(fig, width='stretch', key=f"plot_{factor.name}")
+    st.plotly_chart(fig, use_container_width=True, key=f"plot_{factor.name}")
 
     # Slider below plot
     new_val = st.slider(
@@ -347,7 +343,7 @@ def _display_categorical_factor(
     )
 
     fig = apply_plot_style(fig)
-    st.plotly_chart(fig, width='stretch', key=f"plot_{factor.name}")
+    st.plotly_chart(fig, use_container_width=True, key=f"plot_{factor.name}")
 
     # Selectbox below plot
     new_val = st.selectbox(
@@ -484,7 +480,7 @@ def _generate_contour_mesh(factors, x_factor, y_factor, results):
         x_factor_obj = next(f for f in factors if f.name == x_factor)
         y_factor_obj = next(f for f in factors if f.name == y_factor)
 
-        # Create grid (in actual values)
+        # Create grid
         x_min, x_max = x_factor_obj.levels
         y_min, y_max = y_factor_obj.levels
 
@@ -492,7 +488,7 @@ def _generate_contour_mesh(factors, x_factor, y_factor, results):
         y_grid = np.linspace(y_min, y_max, 50)
         X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
 
-        # Prepare prediction grid (in actual values)
+        # Prepare prediction grid
         grid_points = []
         for i in range(len(x_grid)):
             for j in range(len(y_grid)):
@@ -502,13 +498,9 @@ def _generate_contour_mesh(factors, x_factor, y_factor, results):
                 grid_points.append(point)
 
         grid_df = pd.DataFrame(grid_points)
-        
-        # Encode to coded values before predicting
-        from src.core.coding import encode_design
-        grid_df_encoded = encode_design(grid_df, factors)
 
         # Predict on grid
-        Z_pred = results.fitted_model.predict(grid_df_encoded)
+        Z_pred = results.fitted_model.predict(grid_df)
         Z_mesh = np.array(Z_pred).reshape(X_mesh.shape)
 
         return Z_mesh, x_grid, y_grid
@@ -547,7 +539,7 @@ def _plot_contour(x_grid, y_grid, Z_mesh, x_factor, y_factor, selected_response)
     )
 
     fig = apply_plot_style(fig)
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def _display_3d_surface(
@@ -598,7 +590,7 @@ def _display_3d_surface(
             )
 
             fig_3d = apply_plot_style(fig_3d)
-            st.plotly_chart(fig_3d, width='stretch')
+            st.plotly_chart(fig_3d, use_container_width=True)
 
         except Exception as e:
             st.error(f"Could not create 3D surface plot: {e}")

@@ -36,7 +36,7 @@ from src.ui.components.model_builder import display_model_builder, format_term_f
 from src.ui.components.diagnostics_display import display_diagnostics_tab
 from src.ui.components.lof_testing import display_lack_of_fit_test
 from src.ui.components.profiler_display import display_profiler_tab
-from src.core.analysis import ANOVAAnalysis, generate_model_terms
+from src.core.analysis import ANOVAAnalysis, generate_model_terms  # noqa: E402
 
 
 # ==================== MAIN APP ====================
@@ -44,7 +44,7 @@ from src.core.analysis import ANOVAAnalysis, generate_model_terms
 initialize_session_state()
 
 # Add standard sidebar
-from src.ui.components.sidebar import build_standard_sidebar
+from src.ui.components.sidebar import build_standard_sidebar  # noqa: E402
 build_standard_sidebar()
 
 if not can_access_step(5):
@@ -64,9 +64,72 @@ response_names = st.session_state.get('response_names', list(responses.keys()) i
 if responses and not st.session_state.get('response_names'):
     st.session_state['response_names'] = list(responses.keys())
 
+# Check if we have any data at all
 if not responses or not response_names:
-    st.error("No response data available. Please import data in Step 5 (Import Results).")
-    st.stop()
+    # If we have a design but no responses, allow viewing design information
+    if design is not None and len(design) > 0:
+        st.warning("⚠️ No response data loaded yet.")
+        st.info(
+            "You can view the design structure below, or return to Step 5 to import response data.\n\n"
+            "**What you can do without response data:**\n"
+            "- View design matrix\n"
+            "- Check factor settings\n"
+            "- Export design for data collection\n\n"
+            "**To analyze results:**\n"
+            "Return to Step 5 and upload a CSV with filled response columns."
+        )
+        
+        # Show design table
+        st.subheader("📋 Design Matrix")
+        st.dataframe(design, use_container_width=True)
+        
+        # Show factor summary
+        st.subheader("📊 Factor Summary")
+        factor_summary = []
+        for factor in factors:
+            if factor.is_continuous():
+                levels_display = f"[{factor.min_value}, {factor.max_value}]"
+            elif factor.is_discrete_numeric():
+                levels_display = ", ".join(str(v) for v in factor.levels)
+            else:
+                levels_display = ", ".join(str(v) for v in factor.levels)
+            
+            factor_summary.append({
+                'Factor': factor.name,
+                'Type': factor.factor_type.value,
+                'Levels/Range': levels_display,
+                'Units': factor.units or ''
+            })
+        
+        st.dataframe(pd.DataFrame(factor_summary), use_container_width=True)
+        
+        st.divider()
+        
+        # Navigation
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("← Back to Import", use_container_width=True, type="primary"):
+                st.switch_page("pages/5_import_results.py")
+        with col2:
+            if st.button("Export Design Template", use_container_width=True):
+                from src.ui.utils.export import export_design_with_metadata
+                csv_content = export_design_with_metadata(
+                    design, factors, [], 
+                    st.session_state.get('design_metadata', {})
+                )
+                st.download_button(
+                    label="📥 Download CSV",
+                    data=csv_content,
+                    file_name="design_template.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
+        st.stop()
+    else:
+        # No design and no responses - shouldn't be able to access this page
+        st.error("No data available. Please complete Steps 1-4 to create a design, then import data in Step 5.")
+        st.stop()
 
 st.subheader("📊 Response Selection")
 
