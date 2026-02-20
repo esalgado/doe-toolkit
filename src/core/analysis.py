@@ -26,6 +26,7 @@ from src.core.analysis_base import (
     enforce_hierarchy,
     parse_model_term,
     quadratic,
+    compute_actual_coefficients,
 )
 from src.core.split_plot_analysis import fit_split_plot_anova
 
@@ -280,6 +281,7 @@ class ANOVAAnalysis:
             't_value': fitted_model.tvalues,
             'p_value': fitted_model.pvalues
         })
+        effect_estimates = compute_actual_coefficients(effect_estimates, self.factors)
         
         residuals = fitted_model.resid
         fitted_values = fitted_model.fittedvalues

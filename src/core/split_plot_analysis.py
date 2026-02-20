@@ -27,7 +27,7 @@ import statsmodels.api as sm
 from statsmodels.formula.api import ols
 
 from src.core.factors import Factor, ChangeabilityLevel
-from src.core.analysis_base import ANOVAResults, parse_model_term
+from src.core.analysis_base import ANOVAResults, parse_model_term, compute_actual_coefficients
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +577,7 @@ def fit_split_plot_anova(
         't_value': tvalues[keep_mask],
         'p_value': pvalues[keep_mask],
     })
+    effect_estimates = compute_actual_coefficients(effect_estimates, factors)
 
     residuals = np.array(sp_fitted.resid)
     fitted_values = np.array(sp_fitted.fittedvalues)

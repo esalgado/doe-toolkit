@@ -329,6 +329,191 @@ def enforce_hierarchy(
 # ---------------------------------------------------------------------------
 
 
+def compute_actual_coefficients(
+    effect_estimates: pd.DataFrame,
+    factors: List[Factor],
+) -> pd.DataFrame:
+    """
+    Convert coded-unit coefficients and standard errors to actual units.
+
+    The model is fit on coded factors where each continuous factor x is
+    transformed via ``x_coded = (x_actual - center) / half_range``.
+    This function inverts that scaling so the coefficients reflect the
+    original factor units.
+
+    Transformation rules
+    --------------------
+    - **Intercept**: adjusted for all centering shifts.
+    - **Main effect** (continuous): ``b_actual = b_coded / half_range``
+    - **Interaction A:B** (both continuous): ``b_actual = b_coded / (hr_A * hr_B)``
+    - **Quadratic I(A**2)**: ``b_actual = b_coded / hr_A**2``
+    - **Categorical / discrete-numeric** terms: passed through unchanged.
+
+    Standard errors scale by the same factor as their corresponding
+    coefficient (no centering correction needed for errors).
+
+    Parameters
+    ----------
+    effect_estimates : pd.DataFrame
+        Coefficient table with at minimum ``Coefficient`` and ``Std_Error``
+        columns and term names as the index (patsy convention).
+    factors : List[Factor]
+        Factor definitions used to retrieve ``min_value`` / ``max_value``
+        for continuous factors.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``effect_estimates`` with two additional columns:
+        ``Actual_Coefficient`` and ``Actual_Std_Error``.  Rows for
+        categorical dummies or unrecognised terms are filled with ``NaN``.
+
+    Notes
+    -----
+    Discrete-numeric factors are treated as categorical for this conversion
+    because their levels are not necessarily evenly spaced, and a single
+    half-range scale factor would be misleading.
+
+    Examples
+    --------
+    >>> compute_actual_coefficients(effect_estimates, factors)
+       Coefficient  Std_Error  ...  Actual_Coefficient  Actual_Std_Error
+    """
+    # Build lookup: factor_name -> (center, half_range) for continuous only
+    scale: Dict[str, Tuple[float, float]] = {}
+    for f in factors:
+        if f.is_continuous() and f.min_value is not None and f.max_value is not None:
+            center = (f.min_value + f.max_value) / 2.0
+            half_range = (f.max_value - f.min_value) / 2.0
+            if half_range > 0:
+                scale[f.name] = (center, half_range)
+
+    result = effect_estimates.copy()
+    actual_coefs: List[float] = []
+    actual_ses: List[float] = []
+
+    # Pre-compute intercept adjustment from all continuous main effects
+    intercept_adjustment = 0.0
+    for term_name in effect_estimates.index:
+        if term_name in ("Intercept", "const"):
+            continue
+        _factors, _op = _parse_index_term(term_name)
+        if _op == "" and len(_factors) == 1:
+            fname = _factors[0]
+            if fname in scale:
+                center, half_range = scale[fname]
+                b_coded = float(effect_estimates.loc[term_name, "Coefficient"])
+                intercept_adjustment += b_coded * (-center / half_range)
+
+    for term_name in effect_estimates.index:
+        b_coded = float(effect_estimates.loc[term_name, "Coefficient"])
+        se_coded = float(effect_estimates.loc[term_name, "Std_Error"])
+
+        if term_name in ("Intercept", "const"):
+            actual_coefs.append(b_coded + intercept_adjustment)
+            actual_ses.append(se_coded)  # SE of intercept is not rescaled
+            continue
+
+        factor_names_parsed, op = _parse_index_term(term_name)
+
+        if op == "**":  # Quadratic: I(A ** 2)
+            fname = factor_names_parsed[0]
+            if fname in scale:
+                _, half_range = scale[fname]
+                s = 1.0 / (half_range ** 2)
+                actual_coefs.append(b_coded * s)
+                actual_ses.append(se_coded * s)
+            else:
+                actual_coefs.append(float("nan"))
+                actual_ses.append(float("nan"))
+
+        elif op == ":":  # Interaction A:B (patsy uses ":" separator)
+            if len(factor_names_parsed) == 2:
+                fa, fb = factor_names_parsed
+                if fa in scale and fb in scale:
+                    _, hr_a = scale[fa]
+                    _, hr_b = scale[fb]
+                    s = 1.0 / (hr_a * hr_b)
+                    actual_coefs.append(b_coded * s)
+                    actual_ses.append(se_coded * s)
+                else:
+                    # Mixed continuous/categorical interaction — not converted
+                    actual_coefs.append(float("nan"))
+                    actual_ses.append(float("nan"))
+            else:
+                actual_coefs.append(float("nan"))
+                actual_ses.append(float("nan"))
+
+        elif op == "":  # Main effect or categorical dummy
+            fname = factor_names_parsed[0]
+            if fname in scale:
+                _, half_range = scale[fname]
+                s = 1.0 / half_range
+                actual_coefs.append(b_coded * s)
+                actual_ses.append(se_coded * s)
+            else:
+                # Categorical: pass through as NaN (no single scale factor)
+                actual_coefs.append(float("nan"))
+                actual_ses.append(float("nan"))
+
+        else:
+            actual_coefs.append(float("nan"))
+            actual_ses.append(float("nan"))
+
+    result["Actual_Coefficient"] = actual_coefs
+    result["Actual_Std_Error"] = actual_ses
+    return result
+
+
+def _parse_index_term(term_name: str) -> Tuple[List[str], str]:
+    """
+    Parse a statsmodels/patsy coefficient index label into factor names and operator.
+
+    Handles the following patsy output conventions:
+    - ``'Intercept'`` / ``'const'``  → ``([], '')``
+    - ``'A'``                         → ``(['A'], '')``
+    - ``'A[T.level]'``                → ``(['A'], '')``  (categorical dummy)
+    - ``'A:B'``                        → ``(['A', 'B'], ':')``
+    - ``'I(A ** 2)'``                 → ``(['A'], '**')``
+
+    Parameters
+    ----------
+    term_name : str
+        A single index label from ``fitted_model.params``.
+
+    Returns
+    -------
+    factor_names : List[str]
+        Extracted factor name(s).
+    operator : str
+        ``':'`` for interactions, ``'**'`` for quadratics, ``''`` otherwise.
+    """
+    import re
+
+    if term_name in ("Intercept", "const"):
+        return [], ""
+
+    # Quadratic: "I(A ** 2)"
+    quad_match = re.match(r"I\((.+?)\s*\*\*\s*2\)", term_name)
+    if quad_match:
+        return [quad_match.group(1).strip()], "**"
+
+    # Interaction: "A:B" (patsy uses ":" not "*")
+    if ":" in term_name and not term_name.startswith("I("):
+        parts = term_name.split(":")
+        # Strip categorical encoding e.g. "A[T.level]" -> "A"
+        clean = [re.sub(r"\[T\..*?\]", "", p).strip() for p in parts]
+        return clean, ":"
+
+    # Categorical dummy: "A[T.level]" -> factor name is "A"
+    cat_match = re.match(r"^([^\[]+)\[T\.", term_name)
+    if cat_match:
+        return [cat_match.group(1).strip()], ""
+
+    # Plain main effect
+    return [term_name.strip()], ""
+
+
 def quadratic(factor_name: str) -> str:
     """
     Return the patsy quadratic term notation for a factor.

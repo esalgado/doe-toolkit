@@ -37,4 +37,4 @@ REM No subprocess spawning, no recursion - streamlit.exe is a real executable.
     --server.headless true ^
     --browser.gatherUsageStats false ^
     --server.enableCORS false ^
-    --theme.base dark
+    --theme.base light
