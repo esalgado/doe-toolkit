@@ -1,5 +1,5 @@
-# Build requirements (in addition to requirements.txt)
-# Install these when building the executable
-
-pyinstaller>=6.0.0
-pyinstaller-hooks-contrib>=2023.0
+# Build requirements
+# conda-pack must be installed in the base conda environment, not here.
+# Run: conda install conda-pack
+#
+# No pip-installable build dependencies are required for the conda-pack approach.

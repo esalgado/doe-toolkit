@@ -113,7 +113,7 @@ if st.session_state.get('design') is not None and st.session_state.get('response
         preview_df = design.copy()
         for name, data in responses.items():
             preview_df[name] = data
-        st.dataframe(preview_df.head(10), use_container_width=True)
+        st.dataframe(preview_df.head(10), width='stretch')
 
 st.divider()
 
@@ -172,7 +172,7 @@ if uploaded_file:
         
         st.dataframe(
             pd.DataFrame(factor_table_data),
-            use_container_width=True,
+            width='stretch',
             hide_index=True
         )
         
@@ -188,13 +188,13 @@ if uploaded_file:
             
             st.dataframe(
                 pd.DataFrame(response_table_data),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True
             )
         
         # Show design data preview
         with st.expander("🔍 Design Data Preview (first 10 rows)", expanded=False):
-            st.dataframe(parse_result.design_data.head(10), use_container_width=True)
+            st.dataframe(parse_result.design_data.head(10), width='stretch')
         
         st.divider()
         
@@ -203,7 +203,7 @@ if uploaded_file:
             st.markdown("### ✅ Ready to Import")
             st.caption("This will load the factors, design, and responses into the current session.")
             
-            if st.button("📥 Import All Data", type="primary", use_container_width=True):
+            if st.button("📥 Import All Data", type="primary", width='stretch'):
                 # Load into session
                 st.session_state['factors'] = parse_result.factors
                 st.session_state['design'] = parse_result.design_data
@@ -250,7 +250,7 @@ if uploaded_file:
                     st.caption(f"Session: {', '.join(sorted(session_responses))}")
                     st.caption(f"CSV: {', '.join(sorted(csv_responses))}")
                 
-                if st.button("📥 Import Results (Keep Session Factors)", type="primary", use_container_width=True):
+                if st.button("📥 Import Results (Keep Session Factors)", type="primary", width='stretch'):
                     # Extract responses
                     responses = extract_responses_from_design(
                         parse_result.design_data,
@@ -293,7 +293,7 @@ if uploaded_file:
                         'Match': '✓' if csv_name == session_name and csv_name != '—' else '✗'
                     })
                 
-                st.dataframe(pd.DataFrame(comparison_data), use_container_width=True)
+                st.dataframe(pd.DataFrame(comparison_data), width='stretch')
                 
                 st.divider()
                 
@@ -303,7 +303,7 @@ if uploaded_file:
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    if st.button("🔄 Replace Session with CSV Factors", use_container_width=True):
+                    if st.button("🔄 Replace Session with CSV Factors", width='stretch'):
                         st.session_state['factors'] = parse_result.factors
                         st.session_state['design'] = parse_result.design_data
                         st.session_state['response_definitions'] = parse_result.response_definitions
@@ -323,7 +323,7 @@ if uploaded_file:
                         st.rerun()
                 
                 with col2:
-                    if st.button("📤 Re-upload Corrected CSV", use_container_width=True):
+                    if st.button("📤 Re-upload Corrected CSV", width='stretch'):
                         st.info("Please upload a CSV that matches your session factors, or start a new session.")
     
     else:
@@ -358,7 +358,7 @@ st.divider()
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    if st.button("← Back to Design", use_container_width=True):
+    if st.button("← Back to Design", width='stretch'):
         st.switch_page("pages/4_preview_design.py")
 
 with col3:
@@ -381,7 +381,7 @@ with col3:
     if st.button(
         button_text,
         type="primary", 
-        use_container_width=True,
+        width='stretch',
         disabled=not can_proceed,
         help=help_text
     ):

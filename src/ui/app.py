@@ -29,10 +29,10 @@ initialize_session_state()
 
 # Sidebar: Workflow progress and navigation
 with st.sidebar:
-    st.image("https://via.placeholder.com/200x80/4A90E2/ffffff?text=DOE+Toolkit", use_container_width=True)
+    st.image("https://via.placeholder.com/200x80/4A90E2/ffffff?text=DOE+Toolkit", width='stretch')
     
     # Restart session button at top of sidebar
-    if st.button("🔄 Restart Session", use_container_width=True, type="secondary"):
+    if st.button("🔄 Restart Session", width='stretch', type="secondary"):
         # Clear all session state
         for key in list(st.session_state.keys()):
             del st.session_state[key]
@@ -105,7 +105,7 @@ with col1:
     7. Analyze and optimize
     """)
     
-    if st.button("1️⃣ Define Factors →", type="primary", use_container_width=True):
+    if st.button("1️⃣ Define Factors →", type="primary", width='stretch'):
         st.session_state['current_step'] = 1
         st.switch_page("pages/1_define_factors.py")
     
@@ -124,7 +124,7 @@ with col2:
     5. Optimize
     """)
     
-    if st.button("5️⃣ Import Data →", type="primary", use_container_width=True):
+    if st.button("5️⃣ Import Data →", type="primary", width='stretch'):
         st.session_state['current_step'] = 5
         st.switch_page("pages/5_import_results.py")
     
@@ -181,7 +181,7 @@ if any(progress['completed']):
                 "pages/8_optimize.py"
             ]
             
-            if st.button(f"Continue to Step {next_step} →", type="primary", use_container_width=True):
+            if st.button(f"Continue to Step {next_step} →", type="primary", width='stretch'):
                 st.session_state['current_step'] = next_step
                 st.switch_page(pages[next_step-1])
 

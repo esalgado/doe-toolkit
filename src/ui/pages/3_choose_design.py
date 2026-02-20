@@ -92,7 +92,7 @@ with st.expander("📋 View Defined Factors"):
             'Changeability': f.changeability.value.title()
         })
     
-    st.dataframe(pd.DataFrame(factor_summary), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(factor_summary), width='stretch', hide_index=True)
 
 st.divider()
 
@@ -515,7 +515,7 @@ if st.session_state.get('design_type'):
     # Generate button
     st.divider()
     
-    if st.button("Generate Design →", type="primary", use_container_width=True):
+    if st.button("Generate Design →", type="primary", width='stretch'):
         st.session_state['current_step'] = 4
         st.switch_page("pages/4_preview_design.py")
 
@@ -525,12 +525,12 @@ st.divider()
 col1, col2 = st.columns(2)
 
 with col1:
-    if st.button("← Back to Model", use_container_width=True):
+    if st.button("← Back to Model", width='stretch'):
         st.session_state['current_step'] = 2
         st.switch_page("pages/2_select_model.py")
 
 with col2:
     if st.session_state.get('design_type') and st.session_state.get('design_config'):
-        if st.button("Preview Design →", use_container_width=True):
+        if st.button("Preview Design →", width='stretch'):
             st.session_state['current_step'] = 4
             st.switch_page("pages/4_preview_design.py")

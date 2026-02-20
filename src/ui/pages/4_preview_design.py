@@ -154,7 +154,7 @@ if st.session_state.get('design') is None:
         col_left, col_right = st.columns([2.5, 1])
         
         with col_right:
-            if st.form_submit_button("+ Add Response", use_container_width=True):
+            if st.form_submit_button("+ Add Response", width='stretch'):
                 if new_name.strip():
                     # Validate response name
                     if not _validate_response_name(new_name, st.session_state['response_definitions']):
@@ -242,7 +242,7 @@ if st.session_state.get('design') is None:
                     st.warning(warning)
     
     # Generate button
-    if st.button("🔬 Generate Design", type="primary", use_container_width=True):
+    if st.button("🔬 Generate Design", type="primary", width='stretch'):
         
         with st.spinner("Generating design..."):
             try:
@@ -575,7 +575,7 @@ else:
     else:
         preview_df = design
     
-    st.dataframe(preview_df, use_container_width=True)
+    st.dataframe(preview_df, width='stretch')
     
     # Additional info
     if metadata.get('generators'):
@@ -635,7 +635,7 @@ else:
             data=csv_content,
             file_name=f"doe_design_{timestamp}.csv",
             mime="text/csv",
-            use_container_width=True,
+            width='stretch',
             type="primary"
         )
     
@@ -653,7 +653,7 @@ else:
                 data=project_json,
                 file_name=f"doe_project_{timestamp}.doeproject",
                 mime="application/json",
-                use_container_width=True
+                width='stretch'
             )
         except Exception as e:
             st.error(f"Project export failed: {e}")
@@ -691,19 +691,19 @@ else:
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("🔄 Generate New Design", use_container_width=True):
+        if st.button("🔄 Generate New Design", width='stretch'):
             st.session_state['design'] = None
             st.session_state['design_metadata'] = {}
             invalidate_downstream_state(from_step=3)
             st.rerun()
     
     with col2:
-        if st.button("← Back to Configuration", use_container_width=True):
+        if st.button("← Back to Configuration", width='stretch'):
             st.session_state['current_step'] = 3
             st.switch_page("pages/3_choose_design.py")
     
     with col3:
-        if st.button("Import Results →", type="primary", use_container_width=True):
+        if st.button("Import Results →", type="primary", width='stretch'):
             st.session_state['current_step'] = 5
             st.switch_page("pages/5_import_results.py")
 
@@ -714,6 +714,6 @@ if st.session_state.get('design') is None:
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("← Back to Configuration", use_container_width=True):
+        if st.button("← Back to Configuration", width='stretch'):
             st.session_state['current_step'] = 3
             st.switch_page("pages/3_choose_design.py")

@@ -611,7 +611,7 @@ def load_project_file(file_content: str) -> None:
         
         rename_df = pd.DataFrame(renamed_factors)
         rename_df.columns = ['Original Name', 'Sanitized Name']
-        st.dataframe(rename_df, use_container_width=True)
+        st.dataframe(rename_df, width='stretch')
         
         st.info(
             "💡 **Why?** Special characters like `*`, `+`, `()` are not allowed in "

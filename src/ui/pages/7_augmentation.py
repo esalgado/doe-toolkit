@@ -54,12 +54,12 @@ if not can_access_step(6):
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("← Go to Factor Definition", use_container_width=True):
+        if st.button("← Go to Factor Definition", width='stretch'):
             st.session_state['current_step'] = 1
             st.switch_page("pages/1_define_factors.py")
     
     with col2:
-        if st.button("Go to Import Data →", use_container_width=True):
+        if st.button("Go to Import Data →", width='stretch'):
             st.session_state['current_step'] = 4
             st.switch_page("pages/4_import_results.py")
     
@@ -102,12 +102,12 @@ if st.session_state.get('augmented_design') is not None:
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("← Back to Analysis", use_container_width=True):
+            if st.button("← Back to Analysis", width='stretch'):
                 st.session_state['current_step'] = 5
                 st.switch_page("pages/5_analyze.py")
         
         with col2:
-            if st.button("Optimize →", type="primary", use_container_width=True):
+            if st.button("Optimize →", type="primary", width='stretch'):
                 st.session_state['current_step'] = 7
                 st.switch_page("pages/7_optimize.py")
     
@@ -162,7 +162,7 @@ if not st.session_state.get('quality_report'):
     
     # Show design preview
     with st.expander("👁️ View Design"):
-        st.dataframe(design, use_container_width=True, hide_index=False)
+        st.dataframe(design, width='stretch', hide_index=False)
     
     st.divider()
     
@@ -184,13 +184,13 @@ if not st.session_state.get('quality_report'):
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("📊 Go to Analysis", type="primary", use_container_width=True):
+        if st.button("📊 Go to Analysis", type="primary", width='stretch'):
             st.session_state['current_step'] = 5
             st.switch_page("pages/5_analyze.py")
     
     with col2:
         # Allow proceeding without analysis
-        if st.button("➡️ Continue Without Analysis", use_container_width=True):
+        if st.button("➡️ Continue Without Analysis", width='stretch'):
             st.session_state['skip_quality_check'] = True
             st.rerun()
     
@@ -344,7 +344,7 @@ if len(plans) > 1:
         })
     
     comparison_df = pd.DataFrame(comparison_data)
-    st.sidebar.dataframe(comparison_df, use_container_width=True, hide_index=True)
+    st.sidebar.dataframe(comparison_df, width='stretch', hide_index=True)
 
 # Help section
 with st.sidebar.expander("ℹ️ Understanding Augmentation"):

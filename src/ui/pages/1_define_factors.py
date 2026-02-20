@@ -315,7 +315,7 @@ column_config = {
 edited_df = st.data_editor(
     factors_df,
     column_config=column_config,
-    use_container_width=True,
+    width='stretch',
     num_rows='dynamic',  # Allow adding/deleting rows
     key='factor_table_editor'
 )
@@ -326,7 +326,7 @@ st.divider()
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    if st.button("💾 Save Changes", type="primary", use_container_width=True):
+    if st.button("💾 Save Changes", type="primary", width='stretch'):
         # Validate and save
         with st.spinner("Validating factors..."):
             factors, errors = dataframe_to_factors(edited_df)
@@ -350,7 +350,7 @@ with col1:
 
 with col2:
     if len(st.session_state.get('factors', [])) > 0:
-        if st.button("🗑️ Clear All Factors", use_container_width=True):
+        if st.button("🗑️ Clear All Factors", width='stretch'):
             st.session_state['factors'] = []
             invalidate_downstream_state(from_step=1)
             st.rerun()
@@ -406,13 +406,13 @@ with st.expander("📚 Factor Definition Guide"):
         'Changeability': ['easy', 'easy', 'hard']
     })
     
-    st.dataframe(example_data, use_container_width=True, hide_index=True)
+    st.dataframe(example_data, width='stretch', hide_index=True)
 
 # Navigation
 st.divider()
 
 if len(st.session_state.get('factors', [])) >= 2:
-    if st.button("Continue to Model Selection →", type="primary", use_container_width=True):
+    if st.button("Continue to Model Selection →", type="primary", width='stretch'):
         st.session_state['current_step'] = 2
         st.switch_page("pages/2_select_model.py")
 else:

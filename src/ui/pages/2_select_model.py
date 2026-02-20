@@ -96,7 +96,7 @@ with st.expander("📋 Defined Factors", expanded=False):
     import pandas as pd
     st.dataframe(
         pd.DataFrame(factor_data),
-        use_container_width=True,
+        width='stretch',
         hide_index=True
     )
 
@@ -273,14 +273,14 @@ st.markdown("---")
 col1, col2, col3 = st.columns([1, 2, 1])
 
 with col1:
-    if st.button("← Back to Factors", use_container_width=True):
+    if st.button("← Back to Factors", width='stretch'):
         st.switch_page("pages/1_define_factors.py")
 
 with col3:
     # Model selection complete if we have at least one term
     if len(terms) > 0:
         st.session_state['step_2_complete'] = True
-        if st.button("Next: Choose Design →", use_container_width=True, type="primary"):
+        if st.button("Next: Choose Design →", width='stretch', type="primary"):
             st.switch_page("pages/3_choose_design.py")
     else:
         st.warning("Select at least one model term to continue")

@@ -9,6 +9,8 @@ font = "sans serif"
 headless = true
 enableCORS = false
 enableXsrfProtection = true
+runOnSave = false
 
 [browser]
 gatherUsageStats = false
+serverAddress = "localhost"

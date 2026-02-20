@@ -95,15 +95,15 @@ def display_mode_selection(
             if st.button(
                 "🔧 Fix Detected Issues",
                 type="primary",
-                use_container_width=True,
+                width='stretch',
                 key="mode_a_button"
             ):
                 return 'fix_issues'
         else:
             st.success(
                 "✅ **No critical issues detected.**\n\n"
-                "Your design appears statistically sound. "
-                "You can proceed to optimization, or use Mode B to enhance design capabilities "
+                "Your design appears statistically sound for optimization. "
+                "Use Mode B to proactively enhance design capabilities "
                 "(e.g., add curvature detection, improve prediction precision, increase robustness)."
             )
     
@@ -127,7 +127,7 @@ def display_mode_selection(
         if st.button(
             "🎯 Select Enhancement Goal",
             type="primary" if not availability['fix_issues'] else "secondary",
-            use_container_width=True,
+            width='stretch',
             key="mode_b_button"
         ):
             return 'enhance_design'
@@ -191,7 +191,7 @@ def display_goal_selection(
                 if st.button(
                     "Select",
                     key=f"select_goal_{goal_info['goal']}",
-                    use_container_width=True
+                    width='stretch'
                 ):
                     selected_goal = AugmentationGoal(goal_info['goal'])
             
@@ -239,7 +239,7 @@ def display_augmentation_plans(
         comparison = create_plan_comparison_table(plans)
         st.dataframe(
             pd.DataFrame(comparison),
-            use_container_width=True,
+            width='stretch',
             hide_index=True
         )
     
@@ -341,7 +341,7 @@ def _display_single_plan(
                 f"Select Plan {rank}",
                 key=f"select_plan_{plan.plan_id}",
                 type="primary" if rank == 1 else "secondary",
-                use_container_width=True
+                width='stretch'
             ):
                 st.session_state['selected_augmentation_plan'] = plan
                 st.rerun()
@@ -432,7 +432,7 @@ def _display_augmented_design(augmented: AugmentedDesign) -> None:
         )
         st.dataframe(
             augmented.combined_design,
-            use_container_width=True,
+            width='stretch',
             hide_index=True
         )
         
@@ -453,7 +453,7 @@ def _display_augmented_design(augmented: AugmentedDesign) -> None:
         )
         st.dataframe(
             augmented.new_runs_only,
-            use_container_width=True,
+            width='stretch',
             hide_index=True
         )
         

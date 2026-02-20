@@ -14,6 +14,13 @@ from src.core.augmentation.plan import (
     ValidationResult
 )
 
+from src.core.augmentation.simple_augmentations import (
+    augment_with_center_points,
+    augment_with_replicates,
+    execute_center_points_plan,
+    execute_replicates_plan,
+)
+
 from src.core.augmentation.goals import (
     AugmentationGoal,
     GoalDescription,
@@ -62,6 +69,12 @@ __all__ = [
     'recommend_from_goal',
     'GoalDrivenContext',
     
+    # Simple augmentation strategies
+    'augment_with_center_points',
+    'augment_with_replicates',
+    'execute_center_points_plan',
+    'execute_replicates_plan',
+
     # Unified interface
     'AugmentationRequest',
     'recommend_augmentation',

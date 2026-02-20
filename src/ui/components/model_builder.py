@@ -298,7 +298,7 @@ def display_model_builder(
     # Process button clicks but DON'T return early - let equation display happen
     with op_row[0]:
         if st.button("Main", disabled=not can_main, key=f"{key_prefix}_main", 
-                     use_container_width=True, help="Add as main effects"):
+                     width='stretch', help="Add as main effects"):
             for factor in selected_factors:
                 if factor not in current_terms:
                     current_terms.append(factor)
@@ -306,7 +306,7 @@ def display_model_builder(
     
     with op_row[1]:
         if st.button("×", disabled=not can_cross, key=f"{key_prefix}_cross",
-                     use_container_width=True, help="Cross (interaction)"):
+                     width='stretch', help="Cross (interaction)"):
             term = '*'.join(sorted(selected_factors))
             if term not in current_terms:
                 current_terms.append(term)
@@ -314,7 +314,7 @@ def display_model_builder(
     
     with op_row[2]:
         if st.button("²", disabled=not can_power, key=f"{key_prefix}_square",
-                     use_container_width=True, help="Square"):
+                     width='stretch', help="Square"):
             term = f"I({selected_factors[0]}**2)"
             if term not in current_terms:
                 current_terms.append(term)
@@ -322,7 +322,7 @@ def display_model_builder(
     
     with op_row[3]:
         if st.button("³", disabled=not can_power, key=f"{key_prefix}_cube",
-                     use_container_width=True, help="Cube"):
+                     width='stretch', help="Cube"):
             term = f"I({selected_factors[0]}**3)"
             if term not in current_terms:
                 current_terms.append(term)
@@ -338,7 +338,7 @@ def display_model_builder(
     
     with op_row[5]:
         if st.button("β₀", key=f"{key_prefix}_intercept_toggle",
-                     use_container_width=True, help="Toggle intercept",
+                     width='stretch', help="Toggle intercept",
                      type="primary" if include_intercept else "secondary"):
             if include_intercept:
                 current_terms = [t for t in current_terms if t != '1']
@@ -347,14 +347,14 @@ def display_model_builder(
             # DON'T return early for consistency
     
     with op_row[6]:
-        if st.button("Linear", key=f"{key_prefix}_linear", use_container_width=True):
+        if st.button("Linear", key=f"{key_prefix}_linear", width='stretch'):
             new_terms, warning = get_preset_terms('Linear', factors, include_intercept)
             if warning:
                 st.warning(warning)
             return new_terms  # OK to return - preset buttons replace entire model
     
     with op_row[7]:
-        if st.button("Quadratic", key=f"{key_prefix}_quad", use_container_width=True):
+        if st.button("Quadratic", key=f"{key_prefix}_quad", width='stretch'):
             new_terms, warning = get_preset_terms('Quadratic', factors, include_intercept)
             if warning:
                 st.warning(warning)
@@ -364,14 +364,14 @@ def display_model_builder(
     preset_row = st.columns([1, 1, 1, 1, 4])
     
     with preset_row[0]:
-        if st.button("RSM", key=f"{key_prefix}_rsm", use_container_width=True):
+        if st.button("RSM", key=f"{key_prefix}_rsm", width='stretch'):
             new_terms, warning = get_preset_terms('RSM', factors, include_intercept)
             if warning:
                 st.warning(warning)
             return new_terms  # OK to return - preset buttons replace entire model
     
     with preset_row[1]:
-        if st.button("2FI", key=f"{key_prefix}_full2fi", use_container_width=True,
+        if st.button("2FI", key=f"{key_prefix}_full2fi", width='stretch',
                      help="Full 2-way interactions"):
             new_terms, warning = get_preset_terms('Full Interaction', factors, include_intercept)
             if warning:
@@ -385,7 +385,7 @@ def display_model_builder(
     
     with preset_row[3]:
         if st.button(f"^{power_input}", disabled=not can_power,
-                     key=f"{key_prefix}_custom_power", use_container_width=True):
+                     key=f"{key_prefix}_custom_power", width='stretch'):
             term = f"I({selected_factors[0]}**{power_input})"
             if term not in current_terms:
                 current_terms.append(term)
@@ -429,7 +429,7 @@ def display_model_builder(
                 for term in intercept_terms:
                     display = format_term_for_display(term)
                     btn_key = f"{key_prefix}_rm_intercept_{hash(term) % 10000}"
-                    if st.button(f"❌ {display}", key=btn_key, use_container_width=True):
+                    if st.button(f"❌ {display}", key=btn_key, width='stretch'):
                         remove_term = term
             else:
                 st.caption("_(none)_")
@@ -441,7 +441,7 @@ def display_model_builder(
                 for term in main_effects:
                     display = format_term_for_display(term)
                     btn_key = f"{key_prefix}_rm_main_{term}"
-                    if st.button(f"❌ {display}", key=btn_key, use_container_width=True):
+                    if st.button(f"❌ {display}", key=btn_key, width='stretch'):
                         remove_term = term
             else:
                 st.caption("_(none)_")
@@ -453,7 +453,7 @@ def display_model_builder(
                 for idx, term in enumerate(interactions):
                     display = format_term_for_display(term)
                     btn_key = f"{key_prefix}_rm_int_{idx}_{hash(term) % 10000}"
-                    if st.button(f"❌ {display}", key=btn_key, use_container_width=True):
+                    if st.button(f"❌ {display}", key=btn_key, width='stretch'):
                         remove_term = term
             else:
                 st.caption("_(none)_")
@@ -465,7 +465,7 @@ def display_model_builder(
                 for idx, term in enumerate(powers):
                     display = format_term_for_display(term)
                     btn_key = f"{key_prefix}_rm_pow_{idx}_{hash(term) % 10000}"
-                    if st.button(f"❌ {display}", key=btn_key, use_container_width=True):
+                    if st.button(f"❌ {display}", key=btn_key, width='stretch'):
                         remove_term = term
             else:
                 st.caption("_(none)_")
@@ -477,7 +477,7 @@ def display_model_builder(
                 for idx, term in enumerate(power_interactions):
                     display = format_term_for_display(term)
                     btn_key = f"{key_prefix}_rm_powint_{idx}_{hash(term) % 10000}"
-                    if st.button(f"❌ {display}", key=btn_key, use_container_width=True):
+                    if st.button(f"❌ {display}", key=btn_key, width='stretch'):
                         remove_term = term
             else:
                 st.caption("_(none)_")
@@ -562,7 +562,7 @@ def display_stepwise_button(
     if st.button(
         "🔍 Stepwise Regression (BIC)",
         type="primary",
-        use_container_width=True,
+        width='stretch',
         key=f"{key_prefix}_stepwise_button",
         help="Automatically select best model terms using BIC criterion"
     ):

@@ -3,32 +3,58 @@ Prediction Variance Diagnostics for Design Quality Assessment.
 
 This module computes prediction variance statistics across the design space
 to identify regions with poor precision.
+
+Categorical factor handling
+---------------------------
+Categorical factors are encoded using **sum-to-zero (effects) coding**, which
+is the convention used by JMP and Design-Expert.  For a factor with k levels:
+
+  - k-1 indicator columns are added to the model matrix.
+  - The last level is the reference: it receives -1 on every column.
+  - All other levels receive +1 on their own column and 0 elsewhere.
+
+Example: Catalyst with levels [A, B, C]
+  Run A  → [+1,  0]
+  Run B  → [ 0, +1]
+  Run C  → [-1, -1]   ← reference level
+
+This makes main-effect estimates interpretable in the presence of interactions
+and mirrors what commercial DOE tools report.
+
+`build_model_matrix` returns **both** the numeric matrix and a list of column
+names so that callers (VIF, leverage, …) can map columns back to terms.
 """
 
 from typing import Dict, List, Tuple, Optional
 import numpy as np
 import pandas as pd
 
-from src.core.factors import Factor
+from src.core.factors import Factor, FactorType
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
 
 def _parse_term_type(term: str) -> Tuple[str, List[str], Optional[int]]:
     """
-    Parse term into type, factors, and power.
-    
+    Parse term string into type, factor names, and optional power.
+
     Parameters
     ----------
     term : str
         Model term (e.g., '1', 'A', 'A*B', 'I(A**2)', 'A^2')
-    
+
     Returns
     -------
     term_type : str
         One of: 'intercept', 'main', 'interaction', 'power'
     factors : List[str]
-        Factor names involved in the term
-    power : int, optional
-        Power for polynomial terms (None for other types)
-    
+        Factor names involved in the term.
+    power : int or None
+        Power for polynomial terms; None for other types.
+
     Examples
     --------
     >>> _parse_term_type('1')
@@ -42,158 +68,317 @@ def _parse_term_type(term: str) -> Tuple[str, List[str], Optional[int]]:
     >>> _parse_term_type('A^2')
     ('power', ['A'], 2)
     """
-    if term == '1':
-        return 'intercept', [], None
-    
-    # Check for I(A**2) notation
-    if term.startswith('I(') and '**' in term:
-        # Extract: I(A**2) -> A, 2
-        inner = term[2:-1]  # Remove 'I(' and ')'
-        parts = inner.split('**')
-        return 'power', [parts[0].strip()], int(parts[1].strip())
-    
-    # Check for A^2 or A**2 notation (without I())
-    if '^' in term or '**' in term:
-        sep = '^' if '^' in term else '**'
+    if term == "1":
+        return "intercept", [], None
+
+    # I(A**2) notation (patsy style)
+    if term.startswith("I(") and "**" in term:
+        inner = term[2:-1]
+        parts = inner.split("**")
+        return "power", [parts[0].strip()], int(parts[1].strip())
+
+    # A^2 or A**2 notation
+    if "^" in term or "**" in term:
+        sep = "^" if "^" in term else "**"
         parts = term.split(sep)
-        return 'power', [parts[0].strip()], int(parts[1].strip())
-    
-    # Check for interaction A*B
-    if '*' in term:
-        factors = [f.strip() for f in term.split('*')]
-        return 'interaction', factors, None
-    
-    # Main effect (single factor)
-    return 'main', [term.strip()], None
+        return "power", [parts[0].strip()], int(parts[1].strip())
+
+    # Interaction: A*B
+    if "*" in term:
+        factor_names = [f.strip() for f in term.split("*")]
+        return "interaction", factor_names, None
+
+    # Main effect
+    return "main", [term.strip()], None
+
+
+def _effects_encode(
+    raw: np.ndarray,
+    factor_name: str,
+) -> Tuple[np.ndarray, List[str]]:
+    """
+    Apply sum-to-zero (effects) coding to a categorical column.
+
+    For k unique levels the last level (in order of first appearance) is the
+    reference.  k-1 columns are returned.
+
+    Parameters
+    ----------
+    raw : np.ndarray
+        Raw string values for one factor (shape: n_runs,).
+    factor_name : str
+        Factor name used to build column labels.
+
+    Returns
+    -------
+    encoded : np.ndarray
+        Shape (n_runs, k-1).  dtype float64.
+    col_names : List[str]
+        Column labels, e.g. ``['Catalyst[A]', 'Catalyst[B]']``.
+
+    Notes
+    -----
+    Sum-to-zero coding:
+      - Non-reference level j  →  +1 in column j, 0 elsewhere.
+      - Reference level (last) →  -1 in all k-1 columns.
+
+    References
+    ----------
+    .. [1] Venables, W. N. & Ripley, B. D. (2002). *Modern Applied Statistics
+           with S*, 4th ed.  Section 6.2.
+
+    Examples
+    --------
+    >>> raw = np.array(['A', 'B', 'C', 'A', 'C'])
+    >>> enc, names = _effects_encode(raw, 'Cat')
+    >>> names
+    ['Cat[A]', 'Cat[B]']
+    >>> enc
+    array([[ 1.,  0.],
+           [ 0.,  1.],
+           [-1., -1.],
+           [ 1.,  0.],
+           [-1., -1.]])
+    """
+    # Preserve insertion order so the reference level is deterministic
+    unique_levels: List[str] = list(dict.fromkeys(raw.tolist()))
+    k = len(unique_levels)
+
+    if k < 2:
+        raise ValueError(
+            f"Categorical factor '{factor_name}' has fewer than 2 levels."
+        )
+
+    # Non-reference levels (all except the last)
+    non_ref_levels = unique_levels[:-1]
+    ref_level = unique_levels[-1]
+
+    n = len(raw)
+    encoded = np.zeros((n, k - 1), dtype=float)
+
+    for col_idx, level in enumerate(non_ref_levels):
+        is_level = raw == level
+        is_ref = raw == ref_level
+        encoded[is_level, col_idx] = 1.0
+        encoded[is_ref, col_idx] = -1.0
+        # All other levels remain 0
+
+    col_names = [f"{factor_name}[{lvl}]" for lvl in non_ref_levels]
+    return encoded, col_names
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 
 def build_model_matrix(
     design: pd.DataFrame,
     factors: List[Factor],
-    model_terms: List[str]
-) -> np.ndarray:
+    model_terms: List[str],
+) -> Tuple[np.ndarray, List[str]]:
     """
-    Build model matrix X from design and model terms.
-    
+    Build the model matrix X and its column names from a design and term list.
+
     Parameters
     ----------
     design : pd.DataFrame
-        Design matrix with factor columns
+        Design matrix with one column per factor.
     factors : List[Factor]
-        Factor definitions
+        Factor definitions (used to detect categorical factors).
     model_terms : List[str]
-        Model terms (e.g., ['1', 'A', 'B', 'A*B', 'I(A**2)'])
-    
+        Model terms, e.g. ``['1', 'A', 'B', 'A*B', 'I(A**2)', 'Cat']``.
+
     Returns
     -------
-    np.ndarray
-        Model matrix X (n_runs x n_terms)
-    
+    X : np.ndarray
+        Model matrix of shape (n_runs, n_cols).  dtype float64.
+    col_names : List[str]
+        Column label for every column of X.  Categorical main effects expand
+        to ``k-1`` labels of the form ``'Factor[Level]'``.
+
     Notes
     -----
-    This builds the X matrix used in regression: Y = Xβ + ε
-    
-    Supports:
-    - Intercept: '1'
-    - Main effects: 'A', 'B'
-    - Interactions: 'A*B'
-    - Quadratic (patsy notation): 'I(A**2)'
-    - Quadratic (caret notation): 'A^2'
-    
+    **Continuous / discrete-numeric factors** are used as-is (coded values).
+
+    **Categorical factors** receive sum-to-zero (effects) coding (see module
+    docstring).  A main-effect term for a factor with k levels expands to k-1
+    columns.  An interaction term that involves at least one categorical factor
+    also expands: each categorical is replaced by its k-1 indicator columns
+    and element-wise multiplied with the continuous or categorical columns of
+    the other factor(s) in the interaction.
+
     Examples
     --------
-    >>> X = build_model_matrix(design, factors, ['1', 'A', 'B', 'A*B'])
-    >>> print(X.shape)
+    >>> X, names = build_model_matrix(design, factors, ['1', 'A', 'B', 'A*B'])
+    >>> X.shape
     (16, 4)
+    >>> names
+    ['Intercept', 'A', 'B', 'A*B']
+
+    With a 3-level categorical ``Cat`` (levels A, B, C):
+
+    >>> X, names = build_model_matrix(design, factors, ['1', 'Cat'])
+    >>> X.shape
+    (12, 3)
+    >>> names
+    ['Intercept', 'Cat[A]', 'Cat[B]']
     """
     n_runs = len(design)
-    factor_dict = {f.name: design[f.name].values for f in factors}
-    
-    columns = []
-    
+
+    # Build a lookup: factor_name -> (is_categorical, numeric_or_encoded_array)
+    # For categorical factors we store the full (n, k-1) encoded block.
+    # For numeric factors we store a 1-D array.
+    factor_lookup: Dict[str, Tuple[bool, np.ndarray, List[str]]] = {}
+
+    cat_names = {f.name for f in factors if f.factor_type == FactorType.CATEGORICAL}
+
+    for f in factors:
+        raw = design[f.name].values
+        if f.name in cat_names:
+            encoded_block, enc_col_names = _effects_encode(raw, f.name)
+            factor_lookup[f.name] = (True, encoded_block, enc_col_names)
+        else:
+            numeric_col = raw.astype(float)
+            factor_lookup[f.name] = (False, numeric_col, [f.name])
+
+    columns: List[np.ndarray] = []
+    col_names: List[str] = []
+
     for term in model_terms:
         term_type, factors_in_term, power = _parse_term_type(term)
-        
-        if term_type == 'intercept':
+
+        if term_type == "intercept":
             columns.append(np.ones(n_runs))
-        
-        elif term_type == 'main':
+            col_names.append("Intercept")
+
+        elif term_type == "main":
             fname = factors_in_term[0]
-            if fname not in factor_dict:
+            if fname not in factor_lookup:
                 raise ValueError(f"Unknown factor: '{fname}'")
-            columns.append(factor_dict[fname])
-        
-        elif term_type == 'power':
+
+            is_cat, data, names = factor_lookup[fname]
+            if is_cat:
+                # data is (n, k-1); add each column individually
+                for c_idx, c_name in enumerate(names):
+                    columns.append(data[:, c_idx])
+                    col_names.append(c_name)
+            else:
+                columns.append(data)
+                col_names.append(fname)
+
+        elif term_type == "power":
             fname = factors_in_term[0]
-            if fname not in factor_dict:
+            if fname not in factor_lookup:
                 raise ValueError(f"Unknown factor in term '{term}': {fname}")
-            columns.append(factor_dict[fname] ** power)
-        
-        elif term_type == 'interaction':
-            col = np.ones(n_runs)
+
+            is_cat, data, _ = factor_lookup[fname]
+            if is_cat:
+                raise ValueError(
+                    f"Polynomial term '{term}' is not valid for categorical "
+                    f"factor '{fname}'."
+                )
+            columns.append(data**power)
+            col_names.append(term)
+
+        elif term_type == "interaction":
+            # Build the set of expanded columns for each factor in the term,
+            # then take the outer product across factors.
+            factor_column_sets: List[Tuple[np.ndarray, List[str]]] = []
+
             for fname in factors_in_term:
-                if fname not in factor_dict:
-                    raise ValueError(f"Unknown factor in term '{term}': {fname}")
-                col *= factor_dict[fname]
-            columns.append(col)
-        
+                if fname not in factor_lookup:
+                    raise ValueError(
+                        f"Unknown factor in term '{term}': {fname}"
+                    )
+                is_cat, data, names = factor_lookup[fname]
+                if is_cat:
+                    # Each categorical column as separate 1-D array
+                    factor_column_sets.append(
+                        (
+                            np.array([data[:, i] for i in range(data.shape[1])]),
+                            names,
+                        )
+                    )
+                else:
+                    factor_column_sets.append(
+                        (data.reshape(1, -1), [fname])
+                    )
+
+            # Enumerate all combinations across factors
+            # factor_column_sets[i] = (array of shape (n_cols_i, n_runs), [names])
+            # We want the Cartesian product of columns across factors
+            import itertools
+
+            all_col_arrays = [fcs[0] for fcs in factor_column_sets]
+            all_col_names_lists = [fcs[1] for fcs in factor_column_sets]
+
+            for combo in itertools.product(
+                *[range(arr.shape[0]) for arr in all_col_arrays]
+            ):
+                combined_col = np.ones(n_runs)
+                combined_name_parts = []
+                for factor_idx, col_idx in enumerate(combo):
+                    combined_col = combined_col * all_col_arrays[factor_idx][col_idx]
+                    combined_name_parts.append(
+                        all_col_names_lists[factor_idx][col_idx]
+                    )
+                columns.append(combined_col)
+                col_names.append("*".join(combined_name_parts))
+
         else:
             raise ValueError(f"Unknown term type for '{term}'")
-    
-    return np.column_stack(columns)
+
+    X = np.column_stack(columns)
+    return X, col_names
+
 
 def compute_prediction_variance(
     design: pd.DataFrame,
     factors: List[Factor],
     model_terms: List[str],
-    sigma_squared: float = 1.0
+    sigma_squared: float = 1.0,
 ) -> np.ndarray:
     """
     Compute prediction variance at each design point.
-    
+
     Parameters
     ----------
     design : pd.DataFrame
-        Design matrix
+        Design matrix.
     factors : List[Factor]
-        Factor definitions
+        Factor definitions.
     model_terms : List[str]
-        Model terms
+        Model terms.
     sigma_squared : float, default=1.0
-        Residual variance estimate (from model fit)
-    
+        Residual variance estimate.
+
     Returns
     -------
     np.ndarray
-        Prediction variance at each design point
-    
+        Prediction variance at each design point (shape: n_runs,).
+
     Notes
     -----
-    Prediction variance at point x is:
+    Prediction variance at point x:
+
         Var(ŷ) = σ² · x'(X'X)⁻¹x
-    
-    where X is the model matrix and x is the row for that point.
-    
+
     References
     ----------
     .. [1] Myers, R. H., Montgomery, D. C., & Anderson-Cook, C. M. (2016).
-           Response surface methodology: process and product optimization
-           using designed experiments. John Wiley & Sons.
+           *Response surface methodology*, 4th ed.  Wiley.
     """
-    X = build_model_matrix(design, factors, model_terms)
-    
-    # Compute (X'X)^-1
+    X, _ = build_model_matrix(design, factors, model_terms)
+
     XtX = X.T @ X
-    
+
     try:
         XtX_inv = np.linalg.inv(XtX)
     except np.linalg.LinAlgError:
-        # Singular matrix - add small ridge
         XtX_inv = np.linalg.inv(XtX + 1e-8 * np.eye(XtX.shape[0]))
-    
-    # Prediction variance at each point: diag(X (X'X)^-1 X')
-    # More efficient: sum((X @ XtX_inv) * X, axis=1)
+
     pred_var = np.sum((X @ XtX_inv) * X, axis=1) * sigma_squared
-    
     return pred_var
 
 
@@ -201,50 +386,52 @@ def prediction_variance_stats(
     design: pd.DataFrame,
     factors: List[Factor],
     model_terms: List[str],
-    sigma_squared: float = 1.0
+    sigma_squared: float = 1.0,
 ) -> Dict[str, float]:
     """
-    Compute summary statistics of prediction variance.
-    
+    Compute summary statistics of prediction variance across design points.
+
     Parameters
     ----------
     design : pd.DataFrame
-        Design matrix
+        Design matrix.
     factors : List[Factor]
-        Factor definitions
+        Factor definitions.
     model_terms : List[str]
-        Model terms
+        Model terms.
     sigma_squared : float, default=1.0
-        Residual variance estimate
-    
+        Residual variance estimate.
+
     Returns
     -------
     Dict[str, float]
-        Statistics with keys: 'min', 'max', 'mean', 'std', 'range', 'max_ratio'
-    
+        Keys: ``'min'``, ``'max'``, ``'mean'``, ``'std'``, ``'range'``,
+        ``'max_ratio'``.
+
     Examples
     --------
-    >>> stats = prediction_variance_stats(design, factors, model_terms, sigma_sq=2.5)
+    >>> stats = prediction_variance_stats(design, factors, model_terms, sigma_squared=2.5)
     >>> print(f"Max prediction variance: {stats['max']:.2f}")
     >>> print(f"Max/Min ratio: {stats['max_ratio']:.2f}")
     """
-    pred_var = compute_prediction_variance(design, factors, model_terms, sigma_squared)
-    
-    stats = {
-        'min': float(np.min(pred_var)),
-        'max': float(np.max(pred_var)),
-        'mean': float(np.mean(pred_var)),
-        'std': float(np.std(pred_var)),
-        'range': float(np.ptp(pred_var)),
+    pred_var = compute_prediction_variance(
+        design, factors, model_terms, sigma_squared
+    )
+
+    result: Dict[str, float] = {
+        "min": float(np.min(pred_var)),
+        "max": float(np.max(pred_var)),
+        "mean": float(np.mean(pred_var)),
+        "std": float(np.std(pred_var)),
+        "range": float(np.ptp(pred_var)),
     }
-    
-    # Max/min ratio (indicates uniformity)
-    if stats['min'] > 0:
-        stats['max_ratio'] = stats['max'] / stats['min']
+
+    if result["min"] > 0:
+        result["max_ratio"] = result["max"] / result["min"]
     else:
-        stats['max_ratio'] = np.inf
-    
-    return stats
+        result["max_ratio"] = np.inf
+
+    return result
 
 
 def identify_high_variance_regions(
@@ -252,88 +439,85 @@ def identify_high_variance_regions(
     factors: List[Factor],
     model_terms: List[str],
     sigma_squared: float = 1.0,
-    threshold: float = 2.0
+    threshold: float = 2.0,
 ) -> List[Dict]:
     """
-    Identify design regions with high prediction variance.
-    
+    Identify design runs with prediction variance above ``threshold × mean``.
+
     Parameters
     ----------
     design : pd.DataFrame
-        Design matrix
+        Design matrix.
     factors : List[Factor]
-        Factor definitions
+        Factor definitions.
     model_terms : List[str]
-        Model terms
+        Model terms.
     sigma_squared : float, default=1.0
-        Residual variance estimate
+        Residual variance estimate.
     threshold : float, default=2.0
-        Threshold multiplier (regions with variance > threshold * mean)
-    
+        Multiplier on mean variance to define "high".
+
     Returns
     -------
     List[Dict]
-        List of high-variance regions with run indices and factor settings
-    
+        Each dict has keys ``'run_index'``, ``'variance'``,
+        ``'variance_ratio'``, plus one key per factor name.
+
     Examples
     --------
     >>> regions = identify_high_variance_regions(design, factors, model_terms, threshold=2.5)
-    >>> for region in regions:
-    ...     print(f"Run {region['run_index']}: variance = {region['variance']:.2f}")
+    >>> for r in regions:
+    ...     print(f"Run {r['run_index']}: {r['variance']:.2f}")
     """
-    pred_var = compute_prediction_variance(design, factors, model_terms, sigma_squared)
+    pred_var = compute_prediction_variance(
+        design, factors, model_terms, sigma_squared
+    )
     mean_var = np.mean(pred_var)
-    
-    high_var_mask = pred_var > (threshold * mean_var)
-    high_var_indices = np.where(high_var_mask)[0]
-    
+
+    high_var_indices = np.where(pred_var > threshold * mean_var)[0]
+
     regions = []
     for idx in high_var_indices:
-        region = {
-            'run_index': int(idx),
-            'variance': float(pred_var[idx]),
-            'variance_ratio': float(pred_var[idx] / mean_var),
+        region: Dict = {
+            "run_index": int(idx),
+            "variance": float(pred_var[idx]),
+            "variance_ratio": float(pred_var[idx] / mean_var),
         }
-        
-        # Add factor settings
         for factor in factors:
             region[factor.name] = design[factor.name].iloc[idx]
-        
         regions.append(region)
-    
+
     return regions
 
 
 def compute_fraction_of_design_space(
     pred_var: np.ndarray,
     threshold: float,
-    n_grid_points: int = 1000
+    n_grid_points: int = 1000,
 ) -> float:
     """
-    Estimate fraction of design space with prediction variance below threshold.
-    
-    This is a simple estimator using the empirical CDF of prediction variance
-    at design points.
-    
+    Estimate fraction of design space with prediction variance ≤ threshold.
+
     Parameters
     ----------
     pred_var : np.ndarray
-        Prediction variances at design points
+        Prediction variances at design points.
     threshold : float
-        Variance threshold
+        Variance threshold.
     n_grid_points : int
-        (Not used in simple version)
-    
+        Unused in this simple version; reserved for future Monte-Carlo
+        implementation.
+
     Returns
     -------
     float
-        Estimated fraction of design space with variance ≤ threshold
-    
+        Empirical fraction of design points with variance ≤ threshold.
+
     Notes
     -----
-    For more accurate FDS plots, Monte Carlo sampling or grid evaluation
-    would be needed. This simple version uses the design points themselves
-    as a rough approximation.
+    This uses the empirical CDF of the design points as an approximation.
+    A Monte-Carlo grid evaluation would be more accurate but is out of scope
+    for this helper.
     """
     return float(np.mean(pred_var <= threshold))
 
@@ -341,180 +525,160 @@ def compute_fraction_of_design_space(
 def compute_scaled_prediction_variance(
     design: pd.DataFrame,
     factors: List[Factor],
-    model_terms: List[str]
+    model_terms: List[str],
 ) -> np.ndarray:
     """
-    Compute scaled prediction variance (SPV).
-    
-    Scaled prediction variance is prediction variance divided by
-    number of parameters, providing a dimensionless measure.
-    
-    SPV = n * Var(ŷ) / σ² = n * x'(X'X)⁻¹x
-    
+    Compute scaled prediction variance (SPV = n · x'(X'X)⁻¹x).
+
     Parameters
     ----------
     design : pd.DataFrame
-        Design matrix
+        Design matrix.
     factors : List[Factor]
-        Factor definitions
+        Factor definitions.
     model_terms : List[str]
-        Model terms
-    
+        Model terms.
+
     Returns
     -------
     np.ndarray
-        Scaled prediction variance at each point
-    
+        SPV at each design point.
+
     Notes
     -----
-    SPV is useful for design comparison - lower SPV indicates better precision.
-    For a perfect design, SPV = p (number of parameters).
-    
+    SPV is dimensionless and useful for comparing designs of different sizes.
+    For an ideal design, mean(SPV) equals the number of model parameters p.
+
     References
     ----------
-    .. [1] Box, G. E., & Draper, N. R. (2007). Response surfaces, mixtures,
-           and ridge analyses. John Wiley & Sons.
+    .. [1] Box, G. E., & Draper, N. R. (2007). *Response surfaces, mixtures,
+           and ridge analyses*, 2nd ed.  Wiley.
     """
     n = len(design)
-    p = len(model_terms)
-    
-    # Compute with σ² = 1, then scale by n
-    pred_var = compute_prediction_variance(design, factors, model_terms, sigma_squared=1.0)
-    spv = n * pred_var
-    
-    return spv
+    pred_var = compute_prediction_variance(
+        design, factors, model_terms, sigma_squared=1.0
+    )
+    return n * pred_var
 
 
 def assess_variance_uniformity(
     design: pd.DataFrame,
     factors: List[Factor],
-    model_terms: List[str]
+    model_terms: List[str],
 ) -> Tuple[bool, str]:
     """
-    Assess whether prediction variance is reasonably uniform.
-    
+    Assess whether prediction variance is acceptably uniform across the design.
+
     Parameters
     ----------
     design : pd.DataFrame
-        Design matrix
+        Design matrix.
     factors : List[Factor]
-        Factor definitions
+        Factor definitions.
     model_terms : List[str]
-        Model terms
-    
+        Model terms.
+
     Returns
     -------
     is_uniform : bool
-        Whether variance is acceptably uniform
+        True when max(SPV) / min(SPV) < 3.
     message : str
-        Description of variance uniformity
-    
+        Human-readable description of variance uniformity.
+
     Notes
     -----
-    Uses the criterion: max(SPV) / min(SPV) < 3 for acceptable uniformity.
+    Thresholds (max/min SPV ratio):
+      - < 3   → uniform (acceptable)
+      - 3–5   → moderately non-uniform
+      - ≥ 5   → highly non-uniform
     """
     spv = compute_scaled_prediction_variance(design, factors, model_terms)
-    
-    min_spv = np.min(spv)
-    max_spv = np.max(spv)
-    
-    if min_spv > 0:
-        ratio = max_spv / min_spv
-    else:
-        ratio = np.inf
-    
-    # Criterion: ratio < 3 is acceptable
+
+    min_spv = float(np.min(spv))
+    max_spv = float(np.max(spv))
+
+    ratio = (max_spv / min_spv) if min_spv > 0 else np.inf
+
     if ratio < 3.0:
         return True, f"Prediction variance is uniform (max/min ratio: {ratio:.2f})"
     elif ratio < 5.0:
-        return False, f"Prediction variance is moderately non-uniform (ratio: {ratio:.2f})"
+        return (
+            False,
+            f"Prediction variance is moderately non-uniform (ratio: {ratio:.2f})",
+        )
     else:
-        return False, f"Prediction variance is highly non-uniform (ratio: {ratio:.2f})"
+        return (
+            False,
+            f"Prediction variance is highly non-uniform (ratio: {ratio:.2f})",
+        )
 
 
 def compute_i_criterion(
     design: pd.DataFrame,
     factors: List[Factor],
     model_terms: List[str],
-    prediction_grid_config: Optional[dict] = None
+    prediction_grid_config: Optional[dict] = None,
 ) -> float:
     """
-    Compute I-optimality criterion for a design.
-    
-    The I-criterion measures average prediction variance across the design
-    region, providing a single scalar measure of prediction quality.
-    
-    I = trace((X'X)^(-1) * M)
-    
-    where M is the moment matrix over the prediction region.
-    
+    Compute the I-optimality criterion (average prediction variance).
+
+    I = trace((X'X)⁻¹ · M)
+
+    where M is the moment matrix over a prediction grid.
+
     Parameters
     ----------
     design : pd.DataFrame
-        Design matrix with factor columns
+        Design matrix.
     factors : List[Factor]
-        Factor definitions
+        Factor definitions.
     model_terms : List[str]
-        Model terms to evaluate
+        Model terms.
     prediction_grid_config : dict, optional
-        Configuration for prediction grid generation.
-        See generate_prediction_grid() for options.
-    
+        Passed to ``generate_prediction_grid``.
+
     Returns
     -------
     float
-        I-criterion value (lower is better for prediction)
-    
+        I-criterion value (lower = better prediction uniformity).
+
     Notes
     -----
-    The I-criterion is the integral of prediction variance over the
-    design region. Lower values indicate better, more uniform prediction
-    quality across the space.
-    
-    For comparison:
-    - D-optimal designs minimize parameter variance
-    - I-optimal designs minimize average prediction variance
-    
-    Examples
-    --------
-    >>> i_value = compute_i_criterion(design, factors, model_terms)
-    >>> print(f"Average prediction variance: {i_value:.3f}")
-    
+    D-optimal designs minimise parameter variance; I-optimal designs minimise
+    average prediction variance.  Both criteria are complementary.
+
     References
     ----------
     .. [1] Atkinson, A. C., Donev, A. N., & Tobias, R. D. (2007).
-           Optimum experimental designs, with SAS. Oxford University Press.
+           *Optimum experimental designs, with SAS*.  Oxford University Press.
     .. [2] Jones, B., & Goos, P. (2012). I-optimal versus D-optimal
-           split-plot response surface designs. Journal of Quality
-           Technology, 44(2), 85-101.
+           split-plot response-surface designs. *Journal of Quality
+           Technology*, 44(2), 85-101.
+
+    Examples
+    --------
+    >>> i_val = compute_i_criterion(design, factors, model_terms)
+    >>> print(f"Average prediction variance: {i_val:.3f}")
     """
     from src.core.optimal.criteria import generate_prediction_grid
-    
-    # Build model matrix for design
-    X = build_model_matrix(design, factors, model_terms)
-    
-    # Compute (X'X)^(-1)
+
+    X, _ = build_model_matrix(design, factors, model_terms)
+
     XtX = X.T @ X
     try:
         XtX_inv = np.linalg.inv(XtX + 1e-10 * np.eye(XtX.shape[0]))
     except np.linalg.LinAlgError:
         return np.inf
-    
-    # Generate prediction grid
+
     factor_names = [f.name for f in factors]
-    prediction_points = generate_prediction_grid(factors, prediction_grid_config or {})
-    
-    # Build model matrix for prediction points
+    prediction_points = generate_prediction_grid(
+        factors, prediction_grid_config or {}
+    )
     pred_df = pd.DataFrame(prediction_points, columns=factor_names)
-    X_pred = build_model_matrix(pred_df, factors, model_terms)
-    
-    # Compute moment matrix M = (1/N) * X_pred' * X_pred
+    X_pred, _ = build_model_matrix(pred_df, factors, model_terms)
+
     M = (X_pred.T @ X_pred) / len(prediction_points)
-    
-    # I-criterion = trace((X'X)^(-1) * M)
-    i_criterion = np.trace(XtX_inv @ M)
-    
-    return float(i_criterion)
+    return float(np.trace(XtX_inv @ M))
 
 
 def compute_design_quality_metrics(
@@ -522,90 +686,67 @@ def compute_design_quality_metrics(
     factors: List[Factor],
     model_terms: List[str],
     include_i_optimal: bool = True,
-    prediction_grid_config: Optional[dict] = None
+    prediction_grid_config: Optional[dict] = None,
 ) -> Dict[str, float]:
     """
-    Compute comprehensive design quality metrics.
-    
-    Provides both D-optimality and I-optimality measures for evaluating
-    and comparing experimental designs.
-    
+    Compute comprehensive design quality metrics (D and I optimality).
+
     Parameters
     ----------
     design : pd.DataFrame
-        Design matrix with factor columns
+        Design matrix.
     factors : List[Factor]
-        Factor definitions
+        Factor definitions.
     model_terms : List[str]
-        Model terms to evaluate
+        Model terms.
     include_i_optimal : bool, default=True
-        Whether to compute I-optimality metrics
+        Whether to compute the I-criterion.
     prediction_grid_config : dict, optional
-        Configuration for I-optimal prediction grid
-    
+        Passed to ``compute_i_criterion``.
+
     Returns
     -------
     Dict[str, float]
-        Dictionary with quality metrics:
-        - 'd_efficiency': D-efficiency (0-100)
-        - 'condition_number': Condition number of X'X
-        - 'i_criterion': I-criterion value (if include_i_optimal=True)
-        - 'avg_prediction_variance': Average prediction variance
-        - 'max_prediction_variance': Maximum prediction variance
-        - 'prediction_variance_ratio': Max/min prediction variance ratio
-    
+        Keys: ``'d_efficiency'``, ``'condition_number'``,
+        ``'avg_prediction_variance'``, ``'max_prediction_variance'``,
+        ``'prediction_variance_ratio'``, and optionally ``'i_criterion'``.
+
     Examples
     --------
     >>> metrics = compute_design_quality_metrics(design, factors, model_terms)
     >>> print(f"D-efficiency: {metrics['d_efficiency']:.1f}%")
-    >>> print(f"I-criterion: {metrics['i_criterion']:.3f}")
-    
-    Notes
-    -----
-    This function provides a comprehensive assessment of design quality
-    for both parameter estimation (D-optimal) and prediction (I-optimal)
-    objectives.
     """
-    # Build model matrix
-    X = build_model_matrix(design, factors, model_terms)
-    
-    # Compute X'X
+    X, _ = build_model_matrix(design, factors, model_terms)
     XtX = X.T @ X
-    
-    metrics = {}
-    
-    # D-efficiency metrics
+
+    metrics: Dict[str, float] = {}
+
     try:
         det_XtX = np.linalg.det(XtX)
-        metrics['d_efficiency'] = 100.0 if det_XtX > 0 else 0.0
-        
-        condition_number = np.linalg.cond(XtX)
-        metrics['condition_number'] = float(condition_number)
-    except:
-        metrics['d_efficiency'] = 0.0
-        metrics['condition_number'] = np.inf
-    
-    # Prediction variance metrics
+        metrics["d_efficiency"] = 100.0 if det_XtX > 0 else 0.0
+        metrics["condition_number"] = float(np.linalg.cond(XtX))
+    except Exception:
+        metrics["d_efficiency"] = 0.0
+        metrics["condition_number"] = np.inf
+
     try:
-        pred_var_stats = prediction_variance_stats(
+        pv_stats = prediction_variance_stats(
             design, factors, model_terms, sigma_squared=1.0
         )
-        metrics['avg_prediction_variance'] = pred_var_stats['mean']
-        metrics['max_prediction_variance'] = pred_var_stats['max']
-        metrics['prediction_variance_ratio'] = pred_var_stats['max_ratio']
-    except:
-        metrics['avg_prediction_variance'] = np.nan
-        metrics['max_prediction_variance'] = np.nan
-        metrics['prediction_variance_ratio'] = np.nan
-    
-    # I-optimality metrics
+        metrics["avg_prediction_variance"] = pv_stats["mean"]
+        metrics["max_prediction_variance"] = pv_stats["max"]
+        metrics["prediction_variance_ratio"] = pv_stats["max_ratio"]
+    except Exception:
+        metrics["avg_prediction_variance"] = np.nan
+        metrics["max_prediction_variance"] = np.nan
+        metrics["prediction_variance_ratio"] = np.nan
+
     if include_i_optimal:
         try:
-            i_crit = compute_i_criterion(
+            metrics["i_criterion"] = compute_i_criterion(
                 design, factors, model_terms, prediction_grid_config
             )
-            metrics['i_criterion'] = i_crit
-        except:
-            metrics['i_criterion'] = np.nan
-    
+        except Exception:
+            metrics["i_criterion"] = np.nan
+
     return metrics

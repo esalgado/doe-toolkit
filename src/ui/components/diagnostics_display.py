@@ -185,7 +185,7 @@ def _display_vif_table(diag, format_term_for_display) -> None:
         if vif_data:
             # Display as standard dataframe
             vif_df = pd.DataFrame(vif_data)
-            st.dataframe(vif_df, use_container_width=True, hide_index=True)
+            st.dataframe(vif_df, width='stretch', hide_index=True)
 
             # Add interpretation
             high_vif = [

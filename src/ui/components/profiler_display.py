@@ -14,12 +14,11 @@ Designed to mimic JMP-style prediction profiler functionality.
 from typing import Dict
 
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from src.ui.utils.plotting import PLOT_COLORS, apply_plot_style
-from src.core.coding import encode_settings_dict, is_design_coded
+from src.core.coding import encode_settings_dict
 
 
 def display_profiler_tab(
@@ -115,18 +114,8 @@ def _initialize_profiler_settings(factors) -> None:
 def _compute_prediction(results, factor_settings: Dict, factors) -> float:
     """Compute prediction for given factor settings."""
     try:
-        # Encode settings from actual to coded values before predicting
         encoded_settings = encode_settings_dict(factor_settings, factors)
-        
-        pred_df = pd.DataFrame([encoded_settings])
-        prediction = results.fitted_model.predict(pred_df)[0]
-        
-        # Debug output to diagnose scaling issues
-        print(f"DEBUG[_compute_prediction]: factor_settings (actual) = {factor_settings}")
-        print(f"DEBUG[_compute_prediction]: encoded_settings (coded) = {encoded_settings}")
-        print(f"DEBUG[_compute_prediction]: prediction = {prediction}")
-        
-        return prediction
+        return results.predict_from_settings(encoded_settings)
     except Exception as e:
         st.error(f"Could not compute prediction: {e}")
         return 0.0
@@ -186,30 +175,15 @@ def _display_continuous_factor(
     factor_range = np.linspace(min_val, max_val, trace_points)
 
     trace_predictions = []
-    trace_data = []
     for val in factor_range:
         point = factor_settings.copy()
         point[factor.name] = val
-        trace_data.append(point)
-        # Encode to coded values before predicting
         encoded_point = encode_settings_dict(point, factors)
-        point_df = pd.DataFrame([encoded_point])
-        pred = results.fitted_model.predict(point_df)[0]
-        trace_predictions.append(pred)
+        trace_predictions.append(results.predict_from_settings(encoded_point))
 
-    # Calculate 95% CI
-    trace_df = pd.DataFrame(trace_data)
-    try:
-        # Encode trace data for CI calculation
-        from src.core.coding import encode_design
-        trace_df_encoded = encode_design(trace_df, factors)
-        pred_obj = results.fitted_model.get_prediction(trace_df_encoded)
-        pred_summary = pred_obj.summary_frame(alpha=0.05)
-        ci_lower = pred_summary["mean_ci_lower"].values
-        ci_upper = pred_summary["mean_ci_upper"].values
-    except Exception:
-        ci_lower = None
-        ci_upper = None
+    # CI not available without patsy model; skip silently
+    ci_lower = None
+    ci_upper = None
 
     # Create plot
     fig = go.Figure()
@@ -310,11 +284,8 @@ def _display_categorical_factor(
     for level in factor.levels:
         point = factor_settings.copy()
         point[factor.name] = level
-        # Encode to coded values before predicting
         encoded_point = encode_settings_dict(point, factors)
-        point_df = pd.DataFrame([encoded_point])
-        pred = results.fitted_model.predict(point_df)[0]
-        level_predictions.append(pred)
+        level_predictions.append(results.predict_from_settings(encoded_point))
 
     # Determine which bar is current
     current_level = factor_settings[factor.name]
@@ -501,14 +472,11 @@ def _generate_contour_mesh(factors, x_factor, y_factor, results):
                 point[y_factor] = Y_mesh[j, i]
                 grid_points.append(point)
 
-        grid_df = pd.DataFrame(grid_points)
-        
-        # Encode to coded values before predicting
-        from src.core.coding import encode_design
-        grid_df_encoded = encode_design(grid_df, factors)
-
-        # Predict on grid
-        Z_pred = results.fitted_model.predict(grid_df_encoded)
+        # Predict on grid using coefficient-based predictor (patsy-free)
+        Z_pred = [
+            results.predict_from_settings(encode_settings_dict(pt, factors))
+            for pt in grid_points
+        ]
         Z_mesh = np.array(Z_pred).reshape(X_mesh.shape)
 
         return Z_mesh, x_grid, y_grid

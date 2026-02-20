@@ -184,7 +184,7 @@ def _display_lof_table(
         }
     )
 
-    st.dataframe(lof_table, use_container_width=True, hide_index=True)
+    st.dataframe(lof_table, width='stretch', hide_index=True)
 
 
 def _display_lof_interpretation(p_lof: float) -> None:

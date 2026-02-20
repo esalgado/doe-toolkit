@@ -6,6 +6,7 @@ Updated to use Python/patsy notation: I(A**2) instead of A^2
 
 import pytest
 import warnings
+from typing import List, Tuple
 import numpy as np
 import pandas as pd
 from src.core.analysis import (
@@ -610,9 +611,261 @@ class TestDegreesOfFreedom:
         assert results is not None
 
 
+class TestTwoStrataSplitPlot:
+    """
+    Tests for the two-strata split-plot ANOVA implementation.
+
+    Uses test_case_5_split_plot.csv data (Temperature/Pressure hard,
+    Time/Catalyst easy, 4 whole-plots x 4 sub-runs x 2 replicates = 32 runs).
+    True model: Yield = 70 + 5*T + 3*P + 4*Ti + 2*C + 3*T*Ti + errors
+    """
+
+    # ------------------------------------------------------------------
+    # Fixtures / shared setup
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_factors() -> List[Factor]:
+        return [
+            Factor("Temperature", FactorType.CONTINUOUS,
+                   ChangeabilityLevel.HARD, levels=[125, 175]),
+            Factor("Pressure", FactorType.CONTINUOUS,
+                   ChangeabilityLevel.HARD, levels=[25, 75]),
+            Factor("Time", FactorType.CONTINUOUS,
+                   ChangeabilityLevel.EASY, levels=[0, 20]),
+            Factor("Catalyst", FactorType.CATEGORICAL,
+                   ChangeabilityLevel.EASY, levels=["A", "B"]),
+        ]
+
+    @staticmethod
+    def _make_design_and_response() -> Tuple[pd.DataFrame, np.ndarray]:
+        """Return the test_case_5 design and response as arrays."""
+        from pathlib import Path
+        csv_path = (
+            Path(__file__).parent.parent
+            / "test_data" / "test_case_5_split_plot.csv"
+        )
+        # Read past the comment header block
+        raw = pd.read_csv(csv_path, comment='#')
+        response = raw["Yield"].values
+        return raw, response
+
+    # ------------------------------------------------------------------
+    # Term classification
+    # ------------------------------------------------------------------
+
+    def test_classify_terms_whole_plot_only(self):
+        """Pure whole-plot terms land in the WP stratum."""
+        from src.core.split_plot_analysis import _classify_terms
+        wp, sp = _classify_terms(
+            ['Temperature', 'Pressure', 'Temperature*Pressure'],
+            {'Temperature', 'Pressure'},
+            {'Time', 'Catalyst'},
+        )
+        assert 'Temperature' in wp
+        assert 'Pressure' in wp
+        assert 'Temperature*Pressure' in wp
+        assert len(sp) == 0
+
+    def test_classify_terms_subplot_only(self):
+        """Pure subplot terms land in the SP stratum."""
+        from src.core.split_plot_analysis import _classify_terms
+        wp, sp = _classify_terms(
+            ['Time', 'Catalyst'],
+            {'Temperature', 'Pressure'},
+            {'Time', 'Catalyst'},
+        )
+        assert len(wp) == 0
+        assert 'Time' in sp
+        assert 'Catalyst' in sp
+
+    def test_classify_terms_cross_stratum_interaction(self):
+        """WP*SP interactions belong to the subplot stratum."""
+        from src.core.split_plot_analysis import _classify_terms
+        wp, sp = _classify_terms(
+            ['Temperature', 'Time', 'Temperature*Time'],
+            {'Temperature'},
+            {'Time'},
+        )
+        assert 'Temperature*Time' in sp
+        assert 'Temperature*Time' not in wp
+
+    # ------------------------------------------------------------------
+    # Whole-plot means helper
+    # ------------------------------------------------------------------
+
+    def test_whole_plot_means_shape(self):
+        """_build_whole_plot_means returns one row per unique whole-plot."""
+        from src.core.split_plot_analysis import _build_whole_plot_means
+        design, response = self._make_design_and_response()
+        design["Yield"] = response
+        wp_means = _build_whole_plot_means(
+            design, "WholePlot", ["Temperature", "Pressure"], "Yield"
+        )
+        # 4 unique whole-plot IDs x 2 replicates -> 4 means
+        assert len(wp_means) == 4
+        assert "Yield" in wp_means.columns
+        assert "Temperature" in wp_means.columns
+
+    # ------------------------------------------------------------------
+    # End-to-end: no crash
+    # ------------------------------------------------------------------
+
+    def test_fit_does_not_raise(self):
+        """Loading test_case_5 and fitting a linear model must not raise."""
+        factors = self._make_factors()
+        design, response = self._make_design_and_response()
+
+        analysis = ANOVAAnalysis(
+            design=design, response=response,
+            factors=factors, response_name="Yield",
+        )
+        results = analysis.fit(
+            ['Temperature', 'Pressure', 'Time', 'Catalyst'],
+            enforce_hierarchy_flag=False,
+        )
+        assert results is not None
+
+    # ------------------------------------------------------------------
+    # Results structure
+    # ------------------------------------------------------------------
+
+    def test_results_is_split_plot_flag(self):
+        """Results object must report is_split_plot=True."""
+        factors = self._make_factors()
+        design, response = self._make_design_and_response()
+        analysis = ANOVAAnalysis(design=design, response=response,
+                                 factors=factors, response_name="Yield")
+        results = analysis.fit(
+            ['Temperature', 'Pressure', 'Time', 'Catalyst'],
+            enforce_hierarchy_flag=False,
+        )
+        assert results.is_split_plot is True
+
+    def test_anova_table_has_two_strata(self):
+        """ANOVA table must contain both whole-plot and subplot error rows."""
+        factors = self._make_factors()
+        design, response = self._make_design_and_response()
+        analysis = ANOVAAnalysis(design=design, response=response,
+                                 factors=factors, response_name="Yield")
+        results = analysis.fit(
+            ['Temperature', 'Pressure', 'Time', 'Catalyst'],
+            enforce_hierarchy_flag=False,
+        )
+        assert 'WholePlot Error' in results.anova_table.index
+        assert 'SubPlot Error' in results.anova_table.index
+
+    def test_anova_table_stratum_labels(self):
+        """Hard-factor terms are labelled Whole-Plot; easy-factor terms Sub-Plot."""
+        factors = self._make_factors()
+        design, response = self._make_design_and_response()
+        analysis = ANOVAAnalysis(design=design, response=response,
+                                 factors=factors, response_name="Yield")
+        results = analysis.fit(
+            ['Temperature', 'Pressure', 'Time', 'Catalyst'],
+            enforce_hierarchy_flag=False,
+        )
+        tbl = results.anova_table
+        assert tbl.loc['Temperature', 'Stratum'] == 'Whole-Plot'
+        assert tbl.loc['Pressure', 'Stratum'] == 'Whole-Plot'
+        # Time or Catalyst must be Sub-Plot
+        sp_sources = tbl[tbl['Stratum'] == 'Sub-Plot'].index.tolist()
+        assert any('Time' in s or 'Catalyst' in s for s in sp_sources)
+
+    def test_residuals_length(self):
+        """Residuals must have one entry per run."""
+        factors = self._make_factors()
+        design, response = self._make_design_and_response()
+        analysis = ANOVAAnalysis(design=design, response=response,
+                                 factors=factors, response_name="Yield")
+        results = analysis.fit(
+            ['Temperature', 'Pressure', 'Time', 'Catalyst'],
+            enforce_hierarchy_flag=False,
+        )
+        assert len(results.residuals) == len(design)
+
+    def test_r_squared_range(self):
+        """R² must be in [0, 1]."""
+        factors = self._make_factors()
+        design, response = self._make_design_and_response()
+        analysis = ANOVAAnalysis(design=design, response=response,
+                                 factors=factors, response_name="Yield")
+        results = analysis.fit(
+            ['Temperature', 'Pressure', 'Time', 'Catalyst'],
+            enforce_hierarchy_flag=False,
+        )
+        assert 0.0 <= results.r_squared <= 1.0
+
+    # ------------------------------------------------------------------
+    # Statistical correctness: known signal in test data
+    # ------------------------------------------------------------------
+
+    def test_temperature_significant(self):
+        """
+        Temperature has a true coefficient of 5 and should be significant
+        in the whole-plot stratum (p < 0.05).
+        """
+        factors = self._make_factors()
+        design, response = self._make_design_and_response()
+        analysis = ANOVAAnalysis(design=design, response=response,
+                                 factors=factors, response_name="Yield")
+        results = analysis.fit(
+            ['Temperature', 'Pressure', 'Time', 'Catalyst'],
+            enforce_hierarchy_flag=False,
+        )
+        p_temp = results.anova_table.loc['Temperature', 'P']
+        assert p_temp < 0.05, f"Temperature p={p_temp:.4f} should be < 0.05"
+
+    def test_time_significant(self):
+        """
+        Time has a true coefficient of 4 and should be significant in the
+        subplot stratum (p < 0.05).
+        """
+        factors = self._make_factors()
+        design, response = self._make_design_and_response()
+        analysis = ANOVAAnalysis(design=design, response=response,
+                                 factors=factors, response_name="Yield")
+        results = analysis.fit(
+            ['Temperature', 'Pressure', 'Time', 'Catalyst'],
+            enforce_hierarchy_flag=False,
+        )
+        p_time = results.anova_table.loc['Time', 'P']
+        assert p_time < 0.05, f"Time p={p_time:.4f} should be < 0.05"
+
+    def test_cross_stratum_interaction_in_sp(self):
+        """
+        Temperature*Time is a cross-stratum interaction and must be tested
+        against subplot error (Stratum == Sub-Plot in the ANOVA table).
+        """
+        factors = self._make_factors()
+        design, response = self._make_design_and_response()
+        analysis = ANOVAAnalysis(design=design, response=response,
+                                 factors=factors, response_name="Yield")
+        results = analysis.fit(
+            ['Temperature', 'Pressure', 'Time', 'Catalyst', 'Temperature*Time'],
+            enforce_hierarchy_flag=True,
+        )
+        tbl = results.anova_table
+        assert 'Temperature*Time' in tbl.index
+        assert tbl.loc['Temperature*Time', 'Stratum'] == 'Sub-Plot'
+
+    def test_logworth_columns_present(self):
+        """LogWorth DataFrame must have LogWorth and Stratum columns."""
+        factors = self._make_factors()
+        design, response = self._make_design_and_response()
+        analysis = ANOVAAnalysis(design=design, response=response,
+                                 factors=factors, response_name="Yield")
+        results = analysis.fit(
+            ['Temperature', 'Pressure', 'Time', 'Catalyst'],
+            enforce_hierarchy_flag=False,
+        )
+        assert 'LogWorth' in results.logworth.columns
+        assert 'Stratum' in results.logworth.columns
+
+
 class TestValidationData:
     """Test against published validation datasets."""
-    
+
     def test_basic_factorial_validation(self):
         """Basic validation test - will expand later."""
         pass

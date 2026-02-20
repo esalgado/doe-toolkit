@@ -148,7 +148,7 @@ if optimization_mode == 'single':
                 factor_constraints[factor.name] = (min_val, max_val)
         
         # Optimize button
-        if st.button("🔍 Find Optimal Settings", type="primary", use_container_width=True):
+        if st.button("🔍 Find Optimal Settings", type="primary", width='stretch'):
             with st.spinner("Optimizing..."):
                 try:
                     from src.core.optimization import optimize_response
@@ -228,7 +228,7 @@ if optimization_mode == 'single':
                 y_factor = st.selectbox("Y-Axis Factor", y_factors)
             
             # Generate surface
-            if st.button("Generate Surface", use_container_width=True):
+            if st.button("Generate Surface", width='stretch'):
                 with st.spinner("Generating response surface..."):
                     try:
                         # Get factor ranges
@@ -274,7 +274,7 @@ if optimization_mode == 'single':
                             response_name=primary_response
                         )
                         
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
                     
                     except Exception as e:
                         st.error(f"Surface generation failed: {e}")
@@ -297,7 +297,7 @@ if optimization_mode == 'single':
                 y_factors = [f.name for f in continuous_factors if f.name != x_factor]
                 y_factor = st.selectbox("Y-Axis", y_factors, key='contour_y')
             
-            if st.button("Generate Contours", use_container_width=True):
+            if st.button("Generate Contours", width='stretch'):
                 with st.spinner("Generating contours..."):
                     try:
                         # Similar to surface, but contour plot
@@ -338,7 +338,7 @@ if optimization_mode == 'single':
                             response_name=primary_response
                         )
                         
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
                     
                     except Exception as e:
                         st.error(f"Contour generation failed: {e}")
@@ -389,7 +389,7 @@ st.divider()
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    if st.button("← Back to Augmentation", use_container_width=True):
+    if st.button("← Back to Augmentation", width='stretch'):
         st.session_state['current_step'] = 6
         st.switch_page("pages/6_augmentation.py")
 

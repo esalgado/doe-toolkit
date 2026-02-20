@@ -6,11 +6,14 @@ Model Term Notation:
 - Interactions: 'A*B', 'Temperature*Pressure'
 - Quadratic: 'I(A**2)', 'I(Temperature**2)'
   (uses patsy I() identity operator for Python exponentiation)
+
+Shared primitives (ANOVAResults, parse_model_term, enforce_hierarchy,
+quadratic) live in ``analysis_base`` to avoid circular imports with
+``split_plot_analysis``.
 """
 
 import warnings
 from typing import List, Dict, Optional, Union, Literal, Tuple
-from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -18,6 +21,13 @@ import statsmodels.api as sm
 from statsmodels.formula.api import ols, mixedlm
 
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
+from src.core.analysis_base import (
+    ANOVAResults,
+    enforce_hierarchy,
+    parse_model_term,
+    quadratic,
+)
+from src.core.split_plot_analysis import fit_split_plot_anova
 
 
 def generate_model_terms(
@@ -70,86 +80,13 @@ def generate_model_terms(
     return terms
 
 
-def parse_model_term(term: str) -> Tuple[List[str], str]:
-    """Parse model term into factors and operator."""
-    if '*' in term and not term.startswith('I('):
-        # Interaction: A*B
-        factor_list = [f.strip() for f in term.split('*')]
-        return factor_list, '*'
-    elif term.startswith('I(') and '**' in term:
-        # Quadratic: I(A**2)
-        inner = term[2:-1]
-        base = inner.split('**')[0].strip()
-        return [base], '**'
-    else:
-        # Main effect
-        return [term.strip()], ''
+# parse_model_term is imported from analysis_base
 
 
-def enforce_hierarchy(
-    terms: List[str],
-    factor_names: List[str]
-) -> Tuple[List[str], List[str]]:
-    """Enforce model hierarchy and proper term ordering."""
-    complete_terms = terms.copy()
-    added_terms = []
-    complete_terms_set = set(terms)  # O(1) lookup
-    factor_names_set = set(factor_names)
-    
-    for term in terms:
-        if term == '1':
-            continue
-        
-        factor_list, operator = parse_model_term(term)
-        
-        if operator in ('*', '**'):
-            for factor_name in factor_list:
-                if factor_name not in complete_terms_set and factor_name in factor_names_set:
-                    complete_terms.append(factor_name)
-                    added_terms.append(factor_name)
-                    complete_terms_set.add(factor_name)  # Keep set in sync
-    
-    # Remove duplicates
-    seen = set()
-    unique_terms = [t for t in complete_terms if not (t in seen or seen.add(t))]
-    
-    # Reorder: intercept, main, interaction, quadratic
-    ordered = []
-    if '1' in unique_terms:
-        ordered.append('1')
-    
-    # Main effects
-    for term in unique_terms:
-        if term != '1':
-            factor_list, op = parse_model_term(term)
-            if op == '' and len(factor_list) == 1:
-                ordered.append(term)
-    
-    # Two-way interactions
-    for term in unique_terms:
-        if term != '1':
-            factor_list, op = parse_model_term(term)
-            if op == '*' and len(factor_list) == 2:
-                ordered.append(term)
-    
-    # Quadratic terms
-    for term in unique_terms:
-        if term != '1':
-            factor_list, op = parse_model_term(term)
-            if op == '**':
-                ordered.append(term)
-    
-    # Any remaining terms (shouldn't normally happen)
-    for term in unique_terms:
-        if term not in ordered:
-            ordered.append(term)
-    
-    return ordered, added_terms
+# enforce_hierarchy is imported from analysis_base
 
 
-def quadratic(factor_name: str) -> str:
-    """Helper to generate quadratic term notation."""
-    return f"I({factor_name}**2)"
+# quadratic is imported from analysis_base
 
 
 def detect_split_plot_structure(design: pd.DataFrame, factors: List[Factor]) -> Dict:
@@ -174,41 +111,11 @@ def prepare_analysis_data(
     response_name: str = "Response"
 ) -> pd.DataFrame:
     """Prepare data for analysis."""
-
-    # Debug: sanity check types
-    print("DEBUG[prepare_analysis_data]: design type =", type(design))
-    print("DEBUG[prepare_analysis_data]: response type =", type(response))
-
     if len(response) != len(design):
         raise ValueError(f"Response length mismatch: {len(response)} != {len(design)}")
-    
-    factor_names = [f.name for f in factors]
-    print("DEBUG[prepare_analysis_data]: factor_names =", factor_names)
-    print("DEBUG[prepare_analysis_data]: design.columns =", list(design.columns))
-    print("\n" + "="*80)
-    print("DEBUG: DESIGN VALUES (first 3 rows):")
-    print("="*80)
-    for fname in factor_names:
-        print(f"{fname}: {design[fname].head(3).tolist()}")
-    print("\n" + "="*80)
-    print("DEBUG: FACTOR DEFINITIONS:")
-    print("="*80)
-    for f in factors:
-        print(f"{f.name}: type={f.factor_type.value}, levels={f.levels}")
-    print("\n" + "="*80)
-    print("DEBUG: RESPONSE VALUES (first 5):")
-    print("="*80)
-    print(response[:5])
-    print("="*80 + "\n")
 
-    try:
-        # This is where pandas might be throwing the ValueError
-        analysis_df = design[factor_names].copy()
-    except Exception as e:
-        print("DEBUG[prepare_analysis_data]: error type =", type(e))
-        print("DEBUG[prepare_analysis_data]: error message =", e)
-        # Re-raise so we still see the traceback in Streamlit
-        raise
+    factor_names = [f.name for f in factors]
+    analysis_df = design[factor_names].copy()
 
     analysis_df[response_name] = response
     
@@ -244,21 +151,7 @@ def validate_model_terms(terms: List[str], factors: List[Factor], design: pd.Dat
                 warnings.warn(f"Quadratic '{term}': only {unique_vals} levels")
 
 
-@dataclass
-class ANOVAResults:
-    """Container for ANOVA results."""
-    anova_table: pd.DataFrame
-    effect_estimates: pd.DataFrame
-    logworth: pd.DataFrame
-    residuals: np.ndarray
-    fitted_values: np.ndarray
-    fitted_model: object
-    diagnostics: Dict[str, any]
-    model_terms: List[str]
-    is_split_plot: bool
-    r_squared: float
-    adj_r_squared: float
-    rmse: float
+# ANOVAResults is imported from analysis_base
 
 
 class ANOVAAnalysis:
@@ -283,14 +176,6 @@ class ANOVAAnalysis:
             design, response, factors, response_name
         )
         self.rename_map = {}
-        
-        # Debug: print first few rows of data
-        print(f"DEBUG[ANOVAAnalysis.__init__]: First 5 rows of analysis data:")
-        print(self.data.head())
-        print(f"DEBUG[ANOVAAnalysis.__init__]: Data dtypes:")
-        print(self.data.dtypes)
-
-
         self.design_structure = detect_split_plot_structure(design, factors)
         
         if is_split_plot is not None:
@@ -326,14 +211,7 @@ class ANOVAAnalysis:
     def _fit_fixed_effects_model(self, model_terms: List[str]) -> ANOVAResults:
         """Fit fixed effects ANOVA."""
         formula = self._build_formula(model_terms)
-        
-        # Debug: print data statistics
-        print(f"DEBUG[_fit_fixed_effects_model]: formula = {formula}")
-        print(f"DEBUG[_fit_fixed_effects_model]: response stats: min={self.data[self.response_name].min():.4f}, max={self.data[self.response_name].max():.4f}, mean={self.data[self.response_name].mean():.4f}")
-        for col in self.data.columns:
-            if col != self.response_name and col not in ['Block', 'WholePlot', 'RunOrder', 'StdOrder']:
-                print(f"DEBUG[_fit_fixed_effects_model]: {col} stats: min={self.data[col].min():.4f}, max={self.data[col].max():.4f}, dtype={self.data[col].dtype}")
-        
+
         if self.design_structure['has_blocking'] and not self.block_as_random:
             formula += " + C(Block)"
             fitted_model = ols(formula, data=self.data).fit()
@@ -346,25 +224,34 @@ class ANOVAAnalysis:
         return self._build_results_object(fitted_model, model_terms, False)
     
     def _fit_mixed_effects_model(self, model_terms: List[str]) -> ANOVAResults:
-        """Fit split-plot mixed model."""
+        """
+        Fit a two-strata split-plot ANOVA model.
+
+        Delegates to split_plot_analysis.fit_split_plot_anova which uses the
+        Yates / expected-mean-squares approach:
+        - Whole-plot terms tested against whole-plot error (MS_WP)
+        - Subplot terms tested against subplot error (MS_SP)
+
+        This avoids the LinAlgError that occurs when whole-plot factors are
+        passed to mixedlm alongside a random WholePlot intercept, which makes
+        the design matrix singular because hard factors do not vary within any
+        whole-plot.
+        """
         if self.design_structure['whole_plot_column'] is None:
-            raise ValueError("Split-plot requires 'WholePlot' column")
-        
-        formula = self._build_formula(model_terms)
-        
-        if self.design_structure['has_blocking']:
-            self.data['Block_WholePlot'] = (
-                self.data['Block'].astype(str) + '_' + 
-                self.data[self.design_structure['whole_plot_column']].astype(str)
+            raise ValueError(
+                "Split-plot analysis requires a 'WholePlot' column in the design. "
+                "Ensure the design was generated with hard-to-change factors so that "
+                "whole-plot groupings are recorded."
             )
-            groups = self.data['Block_WholePlot']
-        else:
-            groups = self.data[self.design_structure['whole_plot_column']]
-        
-        model = mixedlm(formula, data=self.data, groups=groups, re_formula='1')
-        fitted_model = model.fit(method='lbfgs')
-        
-        return self._build_results_object(fitted_model, model_terms, True)
+
+        return fit_split_plot_anova(
+            data=self.data,
+            factors=self.factors,
+            model_terms=model_terms,
+            response_name=self.response_name,
+            whole_plot_col=self.design_structure['whole_plot_column'],
+            design_structure=self.design_structure,
+        )
     
     def _build_formula(self, model_terms: List[str]) -> str:
         """Build formula - terms already in patsy notation."""

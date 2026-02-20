@@ -91,7 +91,8 @@ def compute_response_diagnostics(
     ... )
     """
     diag = ResponseDiagnostics(response_name=response_name)
-    
+    diag.model_terms = list(model_terms)
+
     # Extract model fit statistics
     if hasattr(fitted_model, 'rsquared'):
         diag.r_squared = float(fitted_model.rsquared)
@@ -114,10 +115,10 @@ def compute_response_diagnostics(
     diag.prediction_variance_stats = prediction_variance_stats(
         design, factors, model_terms, sigma_squared
     )
-    
+
     # VIF and collinearity
     diag.vif_values = compute_vif(design, factors, model_terms)
-    
+
     # High leverage points
     diag.high_leverage_points = identify_high_leverage_points(
         design, factors, model_terms

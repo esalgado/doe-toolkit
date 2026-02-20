@@ -169,8 +169,8 @@ class AugmentationPlan:
     """
     plan_id: str
     plan_name: str
-    strategy: Literal['foldover', 'd_optimal', 'custom']
-    strategy_config: Union[FoldoverConfig, OptimalAugmentConfig]
+    strategy: Literal['foldover', 'd_optimal', 'center_points', 'replicates', 'custom']
+    strategy_config: Union[FoldoverConfig, OptimalAugmentConfig, Dict[str, Any]]
     
     # Design context
     original_design: pd.DataFrame
@@ -233,8 +233,13 @@ class AugmentationPlan:
         
         elif self.strategy == 'd_optimal':
             config = self.strategy_config
-            if not config.new_model_terms:
-                errors.append("D-optimal augmentation requires new_model_terms")
+            if not isinstance(config, OptimalAugmentConfig):
+                errors.append("D-optimal strategy requires OptimalAugmentConfig")
+            elif not config.new_model_terms:
+                # Orthogonality mode populates new_model_terms from current terms;
+                # only error if truly empty after that resolution.
+                if self.metadata.get('augmentation_purpose') != 'orthogonality':
+                    errors.append("D-optimal augmentation requires new_model_terms")
         
         # Warnings
         if self.n_runs_to_add > len(self.original_design):
@@ -285,6 +290,14 @@ class AugmentationPlan:
         elif self.strategy == 'd_optimal':
             from src.core.augmentation.optimal import execute_optimal_plan
             return execute_optimal_plan(self)
+        
+        elif self.strategy == 'center_points':
+            from src.core.augmentation.simple_augmentations import execute_center_points_plan
+            return execute_center_points_plan(self)
+        
+        elif self.strategy == 'replicates':
+            from src.core.augmentation.simple_augmentations import execute_replicates_plan
+            return execute_replicates_plan(self)
         
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")

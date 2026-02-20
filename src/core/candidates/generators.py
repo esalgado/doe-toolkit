@@ -208,30 +208,60 @@ def _exclude_existing_points(
 ) -> np.ndarray:
     """
     Exclude candidate points that are too close to existing design points.
-    
+
     Uses KDTree for efficient spatial queries: O(n log m) instead of O(n*m).
+
+    Notes
+    -----
+    Only continuous/discrete-numeric factors are used for distance computation.
+    Categorical factors are skipped because they have no natural distance metric
+    and cannot be represented in a KDTree.
     """
     from scipy.spatial import cKDTree
-    
-    # Extract existing points in coded space
-    factor_names = [f.name for f in factors]
-    existing_points = existing_design[factor_names].values
+    from src.core.factors import FactorType
+
+    # Only use numeric factors for spatial distance — categoricals have no metric
+    numeric_factors = [
+        f for f in factors
+        if f.factor_type in (FactorType.CONTINUOUS, FactorType.DISCRETE_NUMERIC)
+    ]
+
+    if not numeric_factors:
+        # Nothing to exclude on — return all candidates unchanged
+        return candidates
+
+    factor_names = [f.name for f in numeric_factors]
+
+    # Guard: only select columns that actually exist in the design
+    available = [name for name in factor_names if name in existing_design.columns]
+    if not available:
+        return candidates
+
+    # Extract and coerce to float (guards against object-dtype DataFrames)
+    try:
+        existing_points = existing_design[available].values.astype(float)
+    except (ValueError, TypeError):
+        # If coercion fails (e.g. mixed strings) skip exclusion rather than crash
+        return candidates
+
     existing_points = np.round(existing_points, decimals=6)
+
+    # Restrict candidates to the same numeric dimensions
+    # candidates columns order matches `factors` order; find the subset indices
+    all_factor_names = [f.name for f in factors]
+    numeric_col_indices = [
+        all_factor_names.index(name) for name in available
+        if name in all_factor_names
+    ]
+    candidates_numeric = candidates[:, numeric_col_indices]
     
-    # Build KDTree for fast nearest-neighbor queries
+    # Build KDTree on numeric dimensions only
     tree = cKDTree(existing_points)
-    
-    # Query tree for each candidate
-    keep_mask = np.ones(len(candidates), dtype=bool)
-    
-    for i, candidate in enumerate(candidates):
-        # Find distance to nearest existing point
-        distance, _ = tree.query(candidate)
-        
-        # Exclude if too close
-        if distance < min_distance:
-            keep_mask[i] = False
-    
+
+    # Query tree for each candidate (numeric dims only)
+    distances, _ = tree.query(candidates_numeric)
+    keep_mask = distances >= min_distance
+
     return candidates[keep_mask]
 
 

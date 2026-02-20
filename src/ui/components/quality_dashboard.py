@@ -221,7 +221,7 @@ def _display_detailed_diagnostics(diag) -> None:
             
             vif_data.append({'Term': term, 'VIF': vif_str, 'Status': status})
         
-        st.dataframe(pd.DataFrame(vif_data), use_container_width=True)
+        st.dataframe(pd.DataFrame(vif_data), width='stretch')
     
     # Significant effects
     if diag.significant_effects or diag.marginally_significant:
@@ -275,7 +275,7 @@ def _display_augmentation_prompt(report: DesignQualityReport) -> None:
         )
     
     # Button to view recommendations
-    if st.button("🔬 View Augmentation Plans", type="primary", use_container_width=True):
+    if st.button("🔬 View Augmentation Plans", type="primary", width='stretch'):
         st.session_state['show_augmentation'] = True
         st.session_state['current_step'] = 6
         st.rerun()

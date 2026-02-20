@@ -20,7 +20,7 @@ def add_export_section():
     st.sidebar.markdown("### 📤 Export")
     
     # Save Project button
-    if st.sidebar.button("💾 Save Project File", use_container_width=True, key="save_project_btn"):
+    if st.sidebar.button("💾 Save Project File", width='stretch', key="save_project_btn"):
         st.session_state['show_save_project'] = True
     
     if st.session_state.get('show_save_project'):
@@ -35,7 +35,7 @@ def add_export_section():
                 data=project_json,
                 file_name=f"doe_project_{timestamp}.doeproject",
                 mime="application/json",
-                use_container_width=True,
+                width='stretch',
                 key="download_project"
             )
             st.sidebar.success("✓ Ready to download!")
@@ -43,7 +43,7 @@ def add_export_section():
             st.sidebar.error(f"Save failed: {e}")
     
     # Generate Report button
-    if st.sidebar.button("📄 Generate HTML Report", use_container_width=True, key="generate_report_btn"):
+    if st.sidebar.button("📄 Generate HTML Report", width='stretch', key="generate_report_btn"):
         st.session_state['show_generate_report'] = True
     
     if st.session_state.get('show_generate_report'):
@@ -63,7 +63,7 @@ def add_export_section():
                         data=html_report,
                         file_name=f"doe_report_{timestamp}.html",
                         mime="text/html",
-                        use_container_width=True,
+                        width='stretch',
                         key="download_report"
                     )
                     st.sidebar.success("✓ Report ready!")

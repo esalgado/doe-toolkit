@@ -5,16 +5,14 @@ This module implements full and single-factor foldover strategies to
 de-alias effects in Resolution III and IV designs.
 """
 
-from typing import List, Tuple, Optional, Dict
-import pandas as pd
-import numpy as np
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+import pandas as pd
+
+from src.core.augmentation.plan import AugmentationPlan, AugmentedDesign, FoldoverConfig
+from src.core.coding import decode_design, encode_design
 from src.core.factors import Factor
-from src.core.augmentation.plan import (
-    AugmentationPlan,
-    AugmentedDesign,
-    FoldoverConfig
-)
 
 
 def augment_full_foldover(
@@ -86,25 +84,40 @@ def augment_full_foldover(
     if missing:
         raise ValueError(f"Design missing factor columns: {missing}")
     
-    # Create foldover design by flipping all signs
-    foldover_design = original_design[factor_names].copy()
-    foldover_design[factor_names] = -foldover_design[factor_names]
-    
+    # Foldover operates in coded space (-1/+1): encode, negate, decode back.
+    factor_cols = original_design[factor_names]
+    coded = encode_design(factor_cols, factors)
+    coded_folded = coded.copy()
+    coded_folded[factor_names] = -coded_folded[factor_names]
+    foldover_factor_cols = decode_design(coded_folded, factors)
+
+    # Restore any non-factor columns from original (e.g. WholePlot) minus
+    # bookkeeping columns that will be rebuilt below.
+    _skip = {'StdOrder', 'RunOrder', 'Phase'}
+    extra_cols = [c for c in original_design.columns if c not in factor_names and c not in _skip]
+
+    foldover_design = foldover_factor_cols.copy()
+    for col in extra_cols:
+        foldover_design[col] = original_design[col].values
+
     # Randomize foldover if requested
     if randomize:
         foldover_design = foldover_design.sample(frac=1, random_state=seed).reset_index(drop=True)
-    
+
     # Add Phase column
     original_with_phase = original_design.copy()
     original_with_phase['Phase'] = 1
-    
+
     foldover_with_phase = foldover_design.copy()
     foldover_with_phase['Phase'] = 2
-    
+
     # Combine
     combined = pd.concat([original_with_phase, foldover_with_phase], ignore_index=True)
-    
-    # Add standard order and run order
+
+    # Re-index StdOrder / RunOrder
+    for col in ('StdOrder', 'RunOrder'):
+        if col in combined.columns:
+            combined = combined.drop(columns=[col])
     combined.insert(0, 'StdOrder', range(1, len(combined) + 1))
     combined.insert(1, 'RunOrder', range(1, len(combined) + 1))
     
@@ -262,25 +275,39 @@ def augment_single_factor_foldover(
     if missing:
         raise ValueError(f"Design missing factor columns: {missing}")
     
-    # Create foldover by flipping ONE factor
-    foldover_design = original_design[factor_names].copy()
-    foldover_design[factor_to_fold] = -foldover_design[factor_to_fold]
-    
+    # Foldover operates in coded space: encode the folded factor, negate, decode.
+    factor_cols = original_design[factor_names]
+    coded = encode_design(factor_cols, factors)
+    coded_folded = coded.copy()
+    coded_folded[factor_to_fold] = -coded_folded[factor_to_fold]
+    foldover_factor_cols = decode_design(coded_folded, factors)
+
+    # Carry forward non-factor, non-bookkeeping columns (e.g. WholePlot).
+    _skip = {'StdOrder', 'RunOrder', 'Phase'}
+    extra_cols = [c for c in original_design.columns if c not in factor_names and c not in _skip]
+
+    foldover_design = foldover_factor_cols.copy()
+    for col in extra_cols:
+        foldover_design[col] = original_design[col].values
+
     # Randomize if requested
     if randomize:
         foldover_design = foldover_design.sample(frac=1, random_state=seed).reset_index(drop=True)
-    
+
     # Add Phase column
     original_with_phase = original_design.copy()
     original_with_phase['Phase'] = 1
-    
+
     foldover_with_phase = foldover_design.copy()
     foldover_with_phase['Phase'] = 2
-    
+
     # Combine
     combined = pd.concat([original_with_phase, foldover_with_phase], ignore_index=True)
-    
-    # Add standard order and run order
+
+    # Re-index StdOrder / RunOrder
+    for col in ('StdOrder', 'RunOrder'):
+        if col in combined.columns:
+            combined = combined.drop(columns=[col])
     combined.insert(0, 'StdOrder', range(1, len(combined) + 1))
     combined.insert(1, 'RunOrder', range(1, len(combined) + 1))
     
