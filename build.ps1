@@ -91,6 +91,10 @@ Write-Host "[5/5] Copying application files..." -ForegroundColor Yellow
 # Source code
 Copy-Item -Recurse -Force "src" "$OutputDir\src"
 
+# Remove __pycache__ directories and *.tmp files from copied source
+Get-ChildItem -Path "$OutputDir\src" -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
+Get-ChildItem -Path "$OutputDir\src" -Recurse -File -Filter "*.tmp" | Remove-Item -Force
+
 # Streamlit config
 if (Test-Path ".streamlit") {
     Copy-Item -Recurse -Force ".streamlit" "$OutputDir\.streamlit"
