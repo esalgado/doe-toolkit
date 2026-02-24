@@ -35,6 +35,7 @@ from src.core.augmentation.recommendations import (
 
 from src.core.augmentation.goal_driven import (
     recommend_from_goal,
+    recommend_from_type,
     GoalDrivenContext
 )
 
@@ -44,6 +45,7 @@ from src.core.augmentation.interface import (
     get_mode_availability,
     get_mode_recommendations,
     get_available_enhancement_goals,
+    get_available_augmentation_types,
     create_plan_comparison_table
 )
 
@@ -65,8 +67,9 @@ __all__ = [
     # Mode A: Diagnostics-driven
     'recommend_from_diagnostics',
     
-    # Mode B: Goal-driven
+    # Mode B: Goal-driven (legacy) and type-driven
     'recommend_from_goal',
+    'recommend_from_type',
     'GoalDrivenContext',
     
     # Simple augmentation strategies
@@ -81,5 +84,6 @@ __all__ = [
     'get_mode_availability',
     'get_mode_recommendations',
     'get_available_enhancement_goals',
+    'get_available_augmentation_types',
     'create_plan_comparison_table',
 ]

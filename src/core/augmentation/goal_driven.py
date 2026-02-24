@@ -680,6 +680,211 @@ def _generate_goal_plan_name(
         return f"{goal_desc.title}: {strategy_display} (Alternative)"
 
 
+# ---------------------------------------------------------------------------
+# Direct Type Selection (Mode B v2 — bypasses goal layer)
+# ---------------------------------------------------------------------------
+
+# Mapping from UI type keys to internal strategy names and strategy_type
+_TYPE_TO_STRATEGY: Dict[str, Dict] = {
+    'foldover': {
+        'strategy_name': 'full_foldover',
+        'strategy_type': 'foldover',
+        'n_runs_factor': 1.0,  # multiplier of current_runs
+        'n_runs_fixed': None,
+    },
+    'ccd': {
+        'strategy_name': 'ccd_augmentation',
+        'strategy_type': 'd_optimal',
+        'n_runs_factor': None,
+        'n_runs_fixed': None,  # computed from n_factors
+    },
+    'center_points': {
+        'strategy_name': 'center_points',
+        'strategy_type': 'center_points',
+        'n_runs_factor': None,
+        'n_runs_fixed': 3,
+    },
+    'replicates': {
+        'strategy_name': 'replicates',
+        'strategy_type': 'replicates',
+        'n_runs_factor': 0.25,  # 25% of current runs
+        'n_runs_fixed': None,
+    },
+    'd_optimal': {
+        'strategy_name': 'd_optimal',
+        'strategy_type': 'd_optimal',
+        'n_runs_factor': None,
+        'n_runs_fixed': None,  # computed from n_factors
+    },
+    'i_optimal': {
+        'strategy_name': 'i_optimal',
+        'strategy_type': 'd_optimal',
+        'n_runs_factor': None,
+        'n_runs_fixed': None,  # computed from n_factors
+    },
+}
+
+
+def recommend_from_type(
+    augmentation_type: str,
+    diagnostics: DesignDiagnosticSummary,
+    budget_constraint: Optional[int] = None,
+    user_adjustments: Optional[Dict] = None,
+) -> List[AugmentationPlan]:
+    """
+    Generate an augmentation plan from a directly selected type string.
+
+    This is the Mode B v2 entry point.  The user selects an augmentation
+    type from the UI (e.g. 'foldover', 'ccd') and we build the plan
+    directly without routing through the goal layer.
+
+    Parameters
+    ----------
+    augmentation_type : str
+        One of: 'foldover', 'ccd', 'center_points', 'replicates',
+        'd_optimal', 'i_optimal'
+    diagnostics : DesignDiagnosticSummary
+        Current design diagnostics.
+    budget_constraint : int, optional
+        Maximum runs to add.
+    user_adjustments : dict, optional
+        User-requested parameter overrides.
+
+    Returns
+    -------
+    List[AugmentationPlan]
+        Single-item list containing the generated plan, or empty list
+        if the type is not applicable.
+
+    Raises
+    ------
+    ValueError
+        If augmentation_type is not recognised.
+
+    Examples
+    --------
+    >>> plans = recommend_from_type('foldover', diagnostics)
+    >>> plans[0].strategy
+    'foldover'
+    """
+    if augmentation_type not in _TYPE_TO_STRATEGY:
+        raise ValueError(
+            f"Unknown augmentation type: '{augmentation_type}'. "
+            f"Valid types: {list(_TYPE_TO_STRATEGY.keys())}"
+        )
+
+    if user_adjustments is None:
+        user_adjustments = {}
+
+    spec = _TYPE_TO_STRATEGY[augmentation_type]
+    strategy_name: str = spec['strategy_name']
+    strategy_type: str = spec['strategy_type']
+
+    # Compute n_runs ----------------------------------------------------------
+    n_factors = diagnostics.n_factors
+    current_runs = diagnostics.n_runs
+
+    if 'n_runs' in user_adjustments:
+        n_runs = int(user_adjustments['n_runs'])
+    elif spec['n_runs_fixed'] is not None:
+        n_runs = int(spec['n_runs_fixed'])
+    elif spec['n_runs_factor'] is not None:
+        n_runs = max(2, int(round(current_runs * spec['n_runs_factor'])))
+    else:
+        # Type-specific defaults
+        if augmentation_type == 'ccd':
+            n_runs = 2 * n_factors + 3  # axial star + center points
+        elif augmentation_type in ('d_optimal', 'i_optimal'):
+            n_runs = max(n_factors + 1, min(2 * n_factors, 20))
+        else:
+            n_runs = max(2, current_runs // 4)
+
+    if budget_constraint is not None:
+        n_runs = min(n_runs, budget_constraint)
+
+    # Build strategy config ---------------------------------------------------
+    config = _create_strategy_config(
+        strategy_name=strategy_name,
+        goal=AugmentationGoal.IMPROVE_PREDICTION,  # neutral goal for config builder
+        n_runs=n_runs,
+        diagnostics=diagnostics,
+        user_adjustments=user_adjustments,
+    )
+
+    if config is None:
+        return []
+
+    # Human-readable names ----------------------------------------------------
+    display_names = {
+        'foldover': 'Full Foldover',
+        'ccd': 'Central Composite (CCD) Augmentation',
+        'center_points': 'Add Center Points',
+        'replicates': 'Add Replicates',
+        'd_optimal': 'D-Optimal Augmentation',
+        'i_optimal': 'I-Optimal Augmentation',
+    }
+    plan_name = display_names.get(augmentation_type, augmentation_type.replace('_', ' ').title())
+
+    plan = AugmentationPlan(
+        plan_id=create_plan_id(),
+        plan_name=plan_name,
+        strategy=strategy_type,
+        strategy_config=config,
+        original_design=diagnostics.original_design,
+        factors=diagnostics.factors,
+        n_runs_to_add=n_runs,
+        total_runs_after=current_runs + n_runs,
+        expected_improvements=_type_improvements(augmentation_type, n_runs, diagnostics),
+        benefits_responses=['All'],
+        primary_beneficiary='All',
+        experimental_cost=float(n_runs),
+        utility_score=80.0,
+        rank=1,
+        metadata={
+            'augmentation_type': augmentation_type,
+            'mode': 'type_driven',
+            'current_model_terms': _get_current_model_terms(diagnostics),
+        },
+    )
+
+    return [plan]
+
+
+def _type_improvements(
+    augmentation_type: str,
+    n_runs: int,
+    diagnostics: DesignDiagnosticSummary,
+) -> Dict[str, str]:
+    """Return expected-improvement descriptions for a directly selected type."""
+    lookup: Dict[str, Dict[str, str]] = {
+        'foldover': {
+            'Resolution': 'Increase by 1 (e.g. III → IV)',
+            'Aliasing': 'Break main effect / 2FI alias chains',
+        },
+        'ccd': {
+            'Model Terms': 'Add quadratic (curvature) effects',
+            'Optimization': 'Enable response surface optimization',
+        },
+        'center_points': {
+            'Curvature Detection': 'Enable LOF test for curvature',
+            'Precision': 'Improve center-region prediction',
+        },
+        'replicates': {
+            'Pure Error': f'Add {n_runs} replicate runs for error estimation',
+            'LOF Test': 'Enable formal lack-of-fit F-test',
+        },
+        'd_optimal': {
+            'D-Efficiency': 'Maximise model estimation precision',
+            'Model Support': 'Improve support for current model terms',
+        },
+        'i_optimal': {
+            'Prediction Variance': 'Reduce average prediction variance',
+            'Uniformity': 'More uniform prediction quality across space',
+        },
+    }
+    return lookup.get(augmentation_type, {})
+
+
 def _rank_goal_plans(
     plans: List[AugmentationPlan],
     context: GoalDrivenContext

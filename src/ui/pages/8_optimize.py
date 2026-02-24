@@ -175,7 +175,19 @@ if optimization_mode == 'single':
                     if opt_result.success:
                         # Display results
                         st.success(f"✅ Optimal settings found!")
-                        
+
+                        # Persist to session state for HTML report
+                        if 'opt_results' not in st.session_state:
+                            st.session_state['opt_results'] = {}
+                        st.session_state['opt_results'][primary_response] = {
+                            'objective': objective,
+                            'optimal_settings': opt_result.optimal_settings,
+                            'predicted_response': opt_result.predicted_response,
+                            'confidence_interval': opt_result.confidence_interval,
+                            'prediction_interval': opt_result.prediction_interval,
+                            'figures': {},
+                        }
+
                         st.subheader("Optimal Factor Settings")
                         for fname, value in opt_result.optimal_settings.items():
                             factor = next(f for f in factors if f.name == fname)
@@ -273,7 +285,14 @@ if optimization_mode == 'single':
                             y_factor_name=y_factor,
                             response_name=primary_response
                         )
-                        
+
+                        # Persist figure for HTML report
+                        if 'opt_results' not in st.session_state:
+                            st.session_state['opt_results'] = {}
+                        if primary_response not in st.session_state['opt_results']:
+                            st.session_state['opt_results'][primary_response] = {'figures': {}}
+                        st.session_state['opt_results'][primary_response].setdefault('figures', {})['surface'] = fig
+
                         st.plotly_chart(fig, width='stretch')
                     
                     except Exception as e:
@@ -337,7 +356,14 @@ if optimization_mode == 'single':
                             y_factor_name=y_factor,
                             response_name=primary_response
                         )
-                        
+
+                        # Persist figure for HTML report
+                        if 'opt_results' not in st.session_state:
+                            st.session_state['opt_results'] = {}
+                        if primary_response not in st.session_state['opt_results']:
+                            st.session_state['opt_results'][primary_response] = {'figures': {}}
+                        st.session_state['opt_results'][primary_response].setdefault('figures', {})['contour'] = fig
+
                         st.plotly_chart(fig, width='stretch')
                     
                     except Exception as e:
@@ -349,39 +375,293 @@ if optimization_mode == 'single':
 elif optimization_mode == 'desirability':
     with tab1:
         st.subheader("Multi-Response Optimization via Desirability")
-        
+
         st.info(
-            "Define desirability functions for each response. "
-            "The optimizer will find factor settings that maximize overall desirability."
+            "Configure a desirability goal for each response. "
+            "The optimizer maximizes overall desirability — the geometric mean of "
+            "individual desirabilities — to find factor settings that satisfy all "
+            "response objectives simultaneously."
         )
-        
-        # Desirability configuration for each response
-        desirability_config = {}
-        
+
+        # --- Per-response desirability configuration ---
+        desirability_config: Dict[str, Dict] = {}
+
         for response_name in response_names:
-            with st.expander(f"⚙️ Configure {response_name}"):
-                goal = st.selectbox(
-                    "Goal",
-                    ["Maximize", "Minimize", "Target", "In Range"],
-                    key=f'goal_{response_name}'
+            with st.expander(f"⚙️ Configure: {response_name}", expanded=True):
+                col_goal, col_imp = st.columns([2, 1])
+
+                with col_goal:
+                    goal = st.selectbox(
+                        "Goal",
+                        ["Maximize", "Minimize", "Target"],
+                        key=f'goal_{response_name}'
+                    )
+
+                with col_imp:
+                    importance = st.slider(
+                        "Importance",
+                        min_value=1,
+                        max_value=5,
+                        value=3,
+                        key=f'importance_{response_name}',
+                        help="Relative importance in geometric mean (1=low, 5=critical)"
+                    )
+
+                col_lo, col_hi = st.columns(2)
+
+                with col_lo:
+                    low_val = st.number_input(
+                        "Low (d=0)" if goal == "Maximize" else
+                        "Low (d=1)" if goal == "Minimize" else
+                        "Low (d=0)",
+                        value=0.0,
+                        key=f'low_{response_name}'
+                    )
+
+                with col_hi:
+                    high_val = st.number_input(
+                        "High (d=1)" if goal == "Maximize" else
+                        "High (d=0)" if goal == "Minimize" else
+                        "High (d=0)",
+                        value=1.0,
+                        key=f'high_{response_name}'
+                    )
+
+                target_val: float = 0.0
+                if goal == "Target":
+                    target_val = st.number_input(
+                        "Target (d=1)",
+                        value=(low_val + high_val) / 2,
+                        key=f'target_{response_name}'
+                    )
+
+                weight_val = st.slider(
+                    "Weight (shape)",
+                    min_value=0.1,
+                    max_value=5.0,
+                    value=1.0,
+                    step=0.1,
+                    key=f'weight_{response_name}',
+                    help="1=linear ramp, >1=emphasize target, <1=more tolerant"
                 )
-                
-                importance = st.slider(
-                    "Importance",
-                    min_value=1,
-                    max_value=5,
-                    value=3,
-                    key=f'importance_{response_name}',
-                    help="Relative importance (1=low, 5=critical)"
-                )
-                
+
                 desirability_config[response_name] = {
                     'goal': goal,
-                    'importance': importance
+                    'low': low_val,
+                    'high': high_val,
+                    'target': target_val,
+                    'weight': weight_val,
+                    'importance': float(importance)
                 }
-        
-        st.markdown("**Note:** Multi-response optimization implementation coming soon!")
-        st.markdown("For now, optimize each response individually in single-response mode.")
+
+        st.divider()
+
+        # --- Factor bounds ---
+        with st.expander("🔧 Factor Bounds (optional)"):
+            factor_bounds_d: Dict[str, tuple] = {}
+            for factor in factors:
+                if factor.is_continuous():
+                    bc1, bc2 = st.columns(2)
+                    with bc1:
+                        bmin = st.number_input(
+                            f"{factor.name} Min",
+                            value=float(factor.min_value),
+                            key=f'dmin_{factor.name}'
+                        )
+                    with bc2:
+                        bmax = st.number_input(
+                            f"{factor.name} Max",
+                            value=float(factor.max_value),
+                            key=f'dmax_{factor.name}'
+                        )
+                    factor_bounds_d[factor.name] = (bmin, bmax)
+
+        # --- Validate config before allowing run ---
+        config_errors: List[str] = []
+        for rn, cfg in desirability_config.items():
+            if cfg['low'] >= cfg['high']:
+                config_errors.append(
+                    f"{rn}: Low must be less than High."
+                )
+            if cfg['goal'] == 'Target':
+                if not (cfg['low'] < cfg['target'] < cfg['high']):
+                    config_errors.append(
+                        f"{rn}: Target must be strictly between Low and High."
+                    )
+
+        if config_errors:
+            for err in config_errors:
+                st.error(err)
+
+        run_disabled = bool(config_errors)
+
+        if st.button(
+            "🔍 Find Optimal Settings",
+            type="primary",
+            disabled=run_disabled,
+            key='run_desirability'
+        ):
+            with st.spinner("Optimizing across all responses..."):
+                try:
+                    from src.core.optimization import (
+                        DesirabilityFunction,
+                        optimize_desirability
+                    )
+
+                    # Build DesirabilityFunction
+                    d_func = DesirabilityFunction(response_names)
+
+                    for rn, cfg in desirability_config.items():
+                        goal_map = {
+                            'Maximize': 'maximize',
+                            'Minimize': 'minimize',
+                            'Target': 'target'
+                        }
+                        d_func.add_response(
+                            response_name=rn,
+                            objective=goal_map[cfg['goal']],
+                            low=cfg['low'],
+                            high=cfg['high'],
+                            target=cfg['target'] if cfg['goal'] == 'Target' else None,
+                            weight=cfg['weight'],
+                            importance=cfg['importance']
+                        )
+
+                    # Run optimizer
+                    d_result = optimize_desirability(
+                        anova_results_dict=fitted_models,
+                        factors=factors,
+                        desirability_func=d_func,
+                        bounds=factor_bounds_d if factor_bounds_d else None,
+                        seed=42
+                    )
+
+                    # Store result for profile tab
+                    st.session_state['desirability_result'] = d_result
+                    st.session_state['desirability_config'] = desirability_config
+
+                    if d_result.success:
+                        st.success("✅ Optimal settings found!")
+                    else:
+                        st.warning(
+                            f"⚠️ Optimizer did not fully converge: {d_result.message}. "
+                            "Results may still be useful."
+                        )
+
+                    # --- Optimal factor settings ---
+                    st.subheader("Optimal Factor Settings")
+                    settings_cols = st.columns(min(len(factors), 4))
+                    for idx, factor in enumerate(factors):
+                        val = d_result.optimal_settings.get(factor.name)
+                        if val is not None:
+                            label = f"{factor.name} ({factor.units})" if factor.units else factor.name
+                            settings_cols[idx % len(settings_cols)].metric(
+                                label, f"{val:.3f}"
+                            )
+
+                    st.divider()
+
+                    # --- Response predictions and desirabilities ---
+                    st.subheader("Predicted Responses & Desirabilities")
+
+                    results_rows = []
+                    for rn in response_names:
+                        results_rows.append({
+                            'Response': rn,
+                            'Predicted': round(d_result.predicted_responses[rn], 4),
+                            'Desirability (dᵢ)': round(
+                                d_result.individual_desirabilities[rn], 4
+                            ),
+                            'Goal': desirability_config[rn]['goal'],
+                            'Importance': int(desirability_config[rn]['importance'])
+                        })
+
+                    results_df = pd.DataFrame(results_rows)
+                    st.dataframe(results_df, hide_index=True, use_container_width=True)
+
+                    # Overall desirability — prominent display
+                    st.metric(
+                        "Overall Desirability (D)",
+                        f"{d_result.overall_desirability:.4f}",
+                        help="Geometric mean of individual desirabilities. "
+                             "D=1 is ideal; D=0 means at least one response is unacceptable."
+                    )
+
+                    with st.expander("🔍 Optimization Details"):
+                        st.write(f"**Iterations:** {d_result.n_iterations}")
+                        st.write(f"**Status:** {d_result.message}")
+
+                except Exception as e:
+                    st.error(f"Optimization failed: {e}")
+                    st.exception(e)
+
+    with tab2:
+        st.subheader("Desirability Profile")
+
+        d_result = st.session_state.get('desirability_result')
+        d_config = st.session_state.get('desirability_config', {})
+
+        if d_result is None:
+            st.info("Run the optimization first to see the desirability profile.")
+        else:
+            import plotly.graph_objects as go
+
+            # Individual desirability bar chart
+            resp_labels = list(d_result.individual_desirabilities.keys())
+            d_values = [d_result.individual_desirabilities[r] for r in resp_labels]
+
+            bar_colors = [
+                '#2ecc71' if v >= 0.8 else '#f39c12' if v >= 0.5 else '#e74c3c'
+                for v in d_values
+            ]
+
+            fig_bar = go.Figure(go.Bar(
+                x=resp_labels,
+                y=d_values,
+                marker_color=bar_colors,
+                text=[f"{v:.3f}" for v in d_values],
+                textposition='outside'
+            ))
+            fig_bar.update_layout(
+                title="Individual Desirabilities",
+                yaxis=dict(range=[0, 1.1], title="Desirability"),
+                xaxis_title="Response",
+                showlegend=False,
+                height=350
+            )
+            fig_bar.add_hline(
+                y=d_result.overall_desirability,
+                line_dash='dash',
+                line_color='navy',
+                annotation_text=f"Overall D = {d_result.overall_desirability:.3f}",
+                annotation_position='top right'
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+            # Desirability summary table
+            st.subheader("Summary at Optimal Settings")
+            summary_rows = []
+            for rn in resp_labels:
+                cfg = d_config.get(rn, {})
+                summary_rows.append({
+                    'Response': rn,
+                    'Goal': cfg.get('goal', '—'),
+                    'Low': cfg.get('low', '—'),
+                    'High': cfg.get('high', '—'),
+                    'Target': cfg.get('target', '—') if cfg.get('goal') == 'Target' else '—',
+                    'Predicted': round(d_result.predicted_responses[rn], 4),
+                    'dᵢ': round(d_result.individual_desirabilities[rn], 4)
+                })
+            st.dataframe(
+                pd.DataFrame(summary_rows),
+                hide_index=True,
+                use_container_width=True
+            )
+
+            st.metric(
+                "Overall Desirability (D)",
+                f"{d_result.overall_desirability:.4f}"
+            )
 
 # Navigation
 st.divider()

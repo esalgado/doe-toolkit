@@ -18,6 +18,7 @@ from src.core.augmentation import (
     get_mode_availability,
     get_mode_recommendations,
     get_available_enhancement_goals,
+    get_available_augmentation_types,
     create_plan_comparison_table
 )
 from src.core.diagnostics import DesignDiagnosticSummary
@@ -135,69 +136,83 @@ def display_mode_selection(
     return None
 
 
-def display_goal_selection(
-    diagnostics: DesignDiagnosticSummary
-) -> Optional[AugmentationGoal]:
+def display_type_selection(
+    diagnostics: DesignDiagnosticSummary,
+) -> Optional[str]:
     """
-    Display goal selection interface for Mode B.
-    
+    Display a flat list of augmentation types for Mode B direct selection.
+
+    Eligible types are shown with a select button.  Ineligible types are
+    shown greyed-out with a short explanation of why they are locked.
+
     Parameters
     ----------
     diagnostics : DesignDiagnosticSummary
-        Current design diagnostics
-    
+        Current design diagnostics used to determine eligibility.
+
     Returns
     -------
-    AugmentationGoal or None
-        Selected goal, or None if no selection
+    str or None
+        The selected augmentation type key (e.g. 'foldover'), or None if
+        the user has not yet made a selection.
     """
-    
-    st.subheader("🎯 Select Your Enhancement Goal")
-    
-    st.markdown("""
-    Choose what you want to accomplish with this augmentation. 
-    Select the goal that best matches your engineering intent.
-    """)
-    
-    # Get available goals
-    available_goals = get_available_enhancement_goals(diagnostics)
-    
-    if not available_goals:
-        st.warning("No enhancement goals available for this design type.")
-        return None
-    
-    # Display goals as cards
-    selected_goal = None
-    
-    for goal_info in available_goals:
+    st.subheader("🔬 Choose an Augmentation Type")
+    st.markdown(
+        "Select the type of augmentation you want to add. "
+        "Options that are not applicable to your current design are shown greyed out."
+    )
+    st.divider()
+
+    aug_types = get_available_augmentation_types(diagnostics)
+    selected_type: Optional[str] = None
+
+    for entry in aug_types:
+        eligible: bool = entry['eligible']
+        lock_reason: Optional[str] = entry['lock_reason']
+
         with st.container():
-            col1, col2 = st.columns([4, 1])
-            
-            with col1:
-                st.markdown(f"### {goal_info['title']}")
-                
-                # Show diagnostic alignment if present
-                if goal_info['diagnostic_alignment']:
-                    st.markdown(goal_info['diagnostic_alignment'])
-                
-                st.markdown(f"**Description:** {goal_info['description']}")
-                
-                with st.expander("ℹ️ More Details"):
-                    st.markdown(f"**When to use:** {goal_info['when_appropriate']}")
-                    st.markdown(f"**Example:** {goal_info['example_scenario']}")
-                    st.markdown(f"**Typical strategies:** {goal_info['typical_strategies']}")
-            
-            with col2:
-                if st.button(
-                    "Select",
-                    key=f"select_goal_{goal_info['goal']}",
-                    width='stretch'
-                ):
-                    selected_goal = AugmentationGoal(goal_info['goal'])
-            
+            col_text, col_btn = st.columns([5, 1])
+
+            with col_text:
+                if eligible:
+                    st.markdown(f"### {entry['label']}")
+                else:
+                    # Visual de-emphasis for locked options
+                    st.markdown(
+                        f"<span style='color:#888; font-size:1.1rem;'>"
+                        f"<strong>🔒 {entry['label']}</strong></span>",
+                        unsafe_allow_html=True,
+                    )
+
+                st.markdown(entry['description'])
+
+                with st.expander("ℹ️ Details", expanded=False):
+                    st.markdown(f"**When to use:** {entry['when_to_use']}")
+                    st.markdown(f"**Typical runs added:** {entry['typical_runs']}")
+                    if lock_reason:
+                        st.info(f"🔒 **Not available:** {lock_reason}")
+
+            with col_btn:
+                if eligible:
+                    if st.button(
+                        "Select",
+                        key=f"select_type_{entry['type']}",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        selected_type = entry['type']
+                else:
+                    st.button(
+                        "Locked",
+                        key=f"locked_type_{entry['type']}",
+                        disabled=True,
+                        use_container_width=True,
+                        help=lock_reason or "Not available for this design.",
+                    )
+
             st.divider()
-    
-    return selected_goal
+
+    return selected_type
 
 
 def display_augmentation_plans(
@@ -309,29 +324,35 @@ def _display_single_plan(
                 for suggestion in diagnostic_suggestions:
                     st.info(suggestion)
         
-        # Parameter adjustment (future feature)
+        # Parameter adjustment
         with st.expander("⚙️ Adjust Parameters (Advanced)", expanded=False):
             st.markdown("**Customize this plan:**")
-            
-            # Run count adjustment
-            adjusted_runs = st.number_input(
-                "Number of runs to add",
-                min_value=1,
-                max_value=plan.n_runs_to_add * 3,
-                value=plan.n_runs_to_add,
-                key=f"adjust_runs_{plan.plan_id}"
-            )
-            
-            if adjusted_runs != plan.n_runs_to_add:
-                st.info(f"Adjusted to {adjusted_runs} runs (original: {plan.n_runs_to_add})")
-                # TODO: Update plan with new run count
-            
-            # Strategy-specific adjustments
+
+            # Foldover run count is fixed (always doubles the design)
             if plan.strategy == 'foldover':
+                st.markdown(f"**Runs to add:** {plan.n_runs_to_add} (fixed for foldover)")
                 config = plan.strategy_config
                 if config.foldover_type == 'single_factor':
                     st.markdown(f"**Foldover factor:** {config.factor_to_fold}")
-                    # TODO: Allow changing the factor
+            else:
+                # Run count adjustment — writes back into the plan immediately
+                adjusted_runs = st.number_input(
+                    "Number of runs to add",
+                    min_value=1,
+                    max_value=plan.n_runs_to_add * 5,
+                    value=plan.n_runs_to_add,
+                    key=f"adjust_runs_{plan.plan_id}"
+                )
+
+                if adjusted_runs != plan.n_runs_to_add:
+                    # Mutate plan in place so the Select button picks up the change
+                    plan.n_runs_to_add = adjusted_runs
+                    plan.total_runs_after = len(plan.original_design) + adjusted_runs
+                    plan.experimental_cost = float(adjusted_runs)
+                    # Keep config in sync for strategies that store it there
+                    if hasattr(plan.strategy_config, 'n_runs_to_add'):
+                        plan.strategy_config.n_runs_to_add = adjusted_runs
+                    st.info(f"Will add {adjusted_runs} runs (click Select to confirm)")
         
         # Selection button
         col1, col2 = st.columns([3, 1])

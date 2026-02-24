@@ -364,6 +364,44 @@ def _display_diagnostics_prompt(
                     compute_design_diagnostic_summary,
                     generate_quality_report,
                 )
+                from src.core.analysis import generate_model_terms
+
+                # Only compute diagnostics for responses that have been fitted.
+                # fitted_models and model_terms_per_response are lazily populated
+                # in 6_analyze.py as each response is selected, so unfitted
+                # responses will be absent from these dicts.
+                fitted_response_names = [
+                    name for name in responses if name in fitted_models
+                ]
+
+                if not fitted_response_names:
+                    st.warning(
+                        "No fitted models found. Please fit a model on the "
+                        "Model Fit tab before generating diagnostics."
+                    )
+                    st.stop()
+
+                if len(fitted_response_names) < len(responses):
+                    unfitted = [
+                        n for n in responses if n not in fitted_response_names
+                    ]
+                    st.info(
+                        f"Diagnostics will only include responses that have been "
+                        f"fitted so far. Not yet fitted: {', '.join(unfitted)}. "
+                        f"Select each response on the Model Fit tab to fit it, "
+                        f"then regenerate diagnostics."
+                    )
+
+                responses_for_diag = {
+                    k: v for k, v in responses.items() if k in fitted_response_names
+                }
+
+                # Fill in any model terms that are missing for fitted responses
+                for resp_name in fitted_response_names:
+                    if resp_name not in model_terms_per_response:
+                        model_terms_per_response[resp_name] = generate_model_terms(
+                            factors, 'linear', include_intercept=True
+                        )
 
                 # Prepare metadata
                 design_metadata = {
@@ -380,15 +418,22 @@ def _display_diagnostics_prompt(
                     ).get("has_center_points", False),
                 }
 
-                # Compute diagnostics
+                # Compute diagnostics — use only the subset of responses/models
+                # that have actually been fitted to avoid KeyErrors.
                 summary = compute_design_diagnostic_summary(
                     design=design,
-                    responses=responses,
+                    responses=responses_for_diag,
                     fitted_models={
-                        k: v.fitted_model for k, v in fitted_models.items()
+                        k: v.fitted_model
+                        for k, v in fitted_models.items()
+                        if k in fitted_response_names
                     },
                     factors=factors,
-                    model_terms_per_response=model_terms_per_response,
+                    model_terms_per_response={
+                        k: v
+                        for k, v in model_terms_per_response.items()
+                        if k in fitted_response_names
+                    },
                     design_metadata=design_metadata,
                 )
 

@@ -341,16 +341,32 @@ with tab1:
     
     with col1:
         st.markdown("**Actual vs Predicted**")
+        # Split-plot tables use a 'P' column with a 'Model' row.
+        # Standard statsmodels anova_lm tables use 'PR(>F)' with no 'Model' row;
+        # the overall model p-value lives on the fitted model's f_pvalue.
         if not results.anova_table.empty and 'P' in results.anova_table.columns:
-            model_p = results.anova_table.loc['Model', 'P'] if 'Model' in results.anova_table.index else 0.0
+            # Split-plot path
+            model_p = results.anova_table.loc['Model', 'P'] if 'Model' in results.anova_table.index else np.nan
+        elif hasattr(results.fitted_model, 'f_pvalue'):
+            # Standard OLS path
+            model_p = float(results.fitted_model.f_pvalue)
         else:
-            model_p = 0.0
+            model_p = np.nan
         
-        fig = create_parity_plot(
-            response_filtered, results.fitted_values,
-            results.r_squared, results.adj_r_squared, results.rmse, model_p
+        fig = create_parity_plot(response_filtered, results.fitted_values)
+        st.plotly_chart(fig, width='stretch', theme=None)
+        if np.isnan(model_p):
+            p_display = "N/A"
+        elif model_p < 0.0001:
+            p_display = f"{model_p:.4e}"
+        else:
+            p_display = f"{model_p:.4f}"
+        st.caption(
+            f"R² = {results.r_squared:.4f}   |   "
+            f"Adj R² = {results.adj_r_squared:.4f}   |   "
+            f"RMSE = {results.rmse:.4f}   |   "
+            f"p = {p_display}"
         )
-        st.plotly_chart(fig, width='stretch')
     
     with col2:
         st.markdown("**Residuals vs Fitted**")

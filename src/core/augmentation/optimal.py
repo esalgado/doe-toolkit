@@ -846,6 +846,11 @@ def execute_optimal_plan(plan: AugmentationPlan) -> AugmentedDesign:
     if not current_model_terms:
         raise ValueError("current_model_terms cannot be empty")
 
+    # plan.n_runs_to_add is the authoritative value — the user may have
+    # adjusted it in the UI after the plan was created, so always prefer
+    # it over config.n_runs_to_add which reflects the original recommendation.
+    n_runs_to_add = plan.n_runs_to_add
+
     # Orthogonality mode: no model extension, just better support for existing terms
     augmentation_purpose = plan.metadata.get("augmentation_purpose", "model_extension")
     if augmentation_purpose == "orthogonality":
@@ -853,7 +858,7 @@ def execute_optimal_plan(plan: AugmentationPlan) -> AugmentedDesign:
             original_design=plan.original_design,
             factors=plan.factors,
             current_model_terms=current_model_terms,
-            n_runs_to_add=config.n_runs_to_add,
+            n_runs_to_add=n_runs_to_add,
             seed=plan.metadata.get("seed"),
         )
     else:
@@ -866,7 +871,7 @@ def execute_optimal_plan(plan: AugmentationPlan) -> AugmentedDesign:
             factors=plan.factors,
             current_model_terms=current_model_terms,
             new_model_terms=config.new_model_terms,
-            n_runs_to_add=config.n_runs_to_add,
+            n_runs_to_add=n_runs_to_add,
             criterion=criterion,
             prediction_grid_config=prediction_grid_config,
             seed=plan.metadata.get("seed"),

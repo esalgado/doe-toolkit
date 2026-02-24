@@ -214,8 +214,14 @@ class ANOVAAnalysis:
         formula = self._build_formula(model_terms)
 
         if self.design_structure['has_blocking'] and not self.block_as_random:
-            formula += " + C(Block)"
-            fitted_model = ols(formula, data=self.data).fit()
+            # Avoid using C(Block) in the formula string: a factor named "C"
+            # would shadow Patsy's categorical function and cause a
+            # 'Series object is not callable' error.  Pre-cast Block to str
+            # so Patsy treats it as categorical automatically.
+            fit_data = self.data.copy()
+            fit_data['Block'] = fit_data['Block'].astype(str)
+            formula += " + Block"
+            fitted_model = ols(formula, data=fit_data).fit()
         elif self.design_structure['has_blocking'] and self.block_as_random:
             model = mixedlm(formula, data=self.data, groups=self.data['Block'], re_formula='1')
             fitted_model = model.fit(method='lbfgs')

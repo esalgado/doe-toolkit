@@ -23,7 +23,7 @@ from src.ui.utils.state_management import (
 )
 from src.ui.components.augmentation_wizard import (
     display_mode_selection,
-    display_goal_selection,
+    display_type_selection,
     display_augmentation_plans,
     display_plan_execution,
     display_no_augmentation_needed,
@@ -237,19 +237,19 @@ if 'augmentation_mode' not in st.session_state:
 # Get selected mode
 mode = st.session_state['augmentation_mode']
 
-# Mode B: Goal selection
-if mode == 'enhance_design' and 'augmentation_goal' not in st.session_state:
-    selected_goal = display_goal_selection(diagnostics)
-    
-    if selected_goal:
-        st.session_state['augmentation_goal'] = selected_goal
+# Mode B: Type selection
+if mode == 'enhance_design' and 'augmentation_type' not in st.session_state:
+    selected_type = display_type_selection(diagnostics)
+
+    if selected_type:
+        st.session_state['augmentation_type'] = selected_type
         st.rerun()
-    
+
     # Back button
     if st.button("← Back to Mode Selection"):
         del st.session_state['augmentation_mode']
         st.rerun()
-    
+
     st.stop()
 
 # Generate augmentation plans if not already generated
@@ -275,10 +275,17 @@ if 'augmentation_plans' not in st.session_state or not st.session_state['augment
                     budget_constraint = None
             
             # Create augmentation request
+            # Mode B now uses 'select_type' when a type has been chosen
+            effective_mode = (
+                'select_type'
+                if mode == 'enhance_design' and st.session_state.get('augmentation_type')
+                else mode
+            )
             request = AugmentationRequest(
-                mode=mode,
+                mode=effective_mode,
                 diagnostics=diagnostics,
                 selected_goal=st.session_state.get('augmentation_goal'),
+                selected_type=st.session_state.get('augmentation_type'),
                 budget_constraint=budget_constraint
             )
             
@@ -324,7 +331,7 @@ display_augmentation_plans(plans, mode)
 
 # Back button
 if st.button("← Start Over"):
-    for key in ['augmentation_mode', 'augmentation_goal', 'augmentation_plans']:
+    for key in ['augmentation_mode', 'augmentation_goal', 'augmentation_type', 'augmentation_plans']:
         if key in st.session_state:
             del st.session_state[key]
     st.rerun()

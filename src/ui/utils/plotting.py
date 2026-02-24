@@ -70,6 +70,12 @@ def apply_plot_style(fig: go.Figure) -> go.Figure:
         paper_bgcolor="white",  # White paper background
         font=dict(family="Arial, sans-serif", size=11, color="#000000"),
         margin=dict(l=50, r=30, t=30, b=50, pad=5),  # Tighter margins (~5%)
+        legend=dict(
+            font=dict(color="#000000"),
+            bgcolor="rgba(255,255,255,0.95)",
+            bordercolor="#000000",
+            borderwidth=1,
+        ),
     )
 
     # Update axes separately to preserve titles
@@ -112,10 +118,6 @@ def apply_plot_style(fig: go.Figure) -> go.Figure:
 def create_parity_plot(
     actual: np.ndarray,
     predicted: np.ndarray,
-    r_squared: float,
-    adj_r_squared: float,
-    rmse: float,
-    p_value: float,
 ) -> go.Figure:
     """
     Create actual vs predicted parity plot with 95% CI of the fit.
@@ -126,31 +128,25 @@ def create_parity_plot(
         Actual response values
     predicted : np.ndarray
         Predicted response values from model
-    r_squared : float
-        R-squared value
-    adj_r_squared : float
-        Adjusted R-squared value
-    rmse : float
-        Root mean squared error
-    p_value : float
-        Model p-value
 
     Returns
     -------
     go.Figure
-        Parity plot with 1:1 reference line, 95% CI band, and statistics
+        Parity plot with 1:1 reference line and 95% CI band
 
     Notes
     -----
     The 95% confidence interval represents uncertainty in the fit line,
     not prediction intervals for individual points. Points should scatter
     around the 1:1 line if the model is unbiased.
+    Model fit statistics (R², RMSE, p) are rendered outside the figure
+    as native UI elements to avoid dark-mode contrast issues.
 
     Examples
     --------
     >>> actual = np.array([1.0, 2.0, 3.0])
     >>> predicted = np.array([1.1, 1.9, 3.2])
-    >>> fig = create_parity_plot(actual, predicted, 0.95, 0.94, 0.15, 0.001)
+    >>> fig = create_parity_plot(actual, predicted)
     """
     min_val = min(actual.min(), predicted.min())
     max_val = max(actual.max(), predicted.max())
@@ -226,25 +222,6 @@ def create_parity_plot(
             hoverinfo="skip",
             showlegend=False,
         )
-    )
-
-    stats_text = (
-        f"R² = {r_squared:.4f}<br>Adj R² = {adj_r_squared:.4f}<br>"
-        f"RMSE = {rmse:.4f}<br>p = {p_value:.4e}"
-    )
-
-    fig.add_annotation(
-        xref="paper",
-        yref="paper",
-        x=0.05,
-        y=0.95,
-        text=stats_text,
-        showarrow=False,
-        font=dict(size=10, color="#000000"),
-        bgcolor="rgba(255, 255, 255, 0.95)",
-        bordercolor="#000000",
-        borderwidth=1,
-        align="left",
     )
 
     fig.update_layout(
