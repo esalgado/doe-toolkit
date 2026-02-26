@@ -102,9 +102,8 @@ def compute_response_diagnostics(
     residuals = fitted_model.resid
     diag.rmse = float(np.sqrt(np.mean(residuals ** 2)))
     
-    # Lack of fit (if pure error available)
-    # This requires center points or replicates
-    diag.lack_of_fit_p_value = _compute_lof_p_value(design, residuals, factors)
+    # Lack of fit (if pure error available — requires replicates or center points)
+    diag.lack_of_fit_p_value = _compute_lof_p_value(design, residuals, factors, model_terms)
     
     # Aliasing diagnostics (for fractional designs)
     if design_metadata['design_type'] == 'fractional':
@@ -144,30 +143,124 @@ def compute_response_diagnostics(
 def _compute_lof_p_value(
     design: pd.DataFrame,
     residuals: np.ndarray,
-    factors: List[Factor]
+    factors: List[Factor],
+    model_terms: List[str],
 ) -> Optional[float]:
     """
-    Compute lack-of-fit p-value if pure error is available.
-    
+    Compute the lack-of-fit (LOF) F-test p-value from model residuals.
+
+    The test partitions the residual sum of squares into:
+
+    - **Pure Error (PE):** variation among true replicates (runs with
+      identical factor settings).  This is model-independent.
+    - **Lack of Fit (LOF):** residual SS beyond pure error.  A significant
+      LOF suggests the model form is inadequate for the data.
+
+    Returns ``None`` when the design has no true replicates, because pure
+    error cannot be estimated without them.
+
+    Parameters
+    ----------
+    design : pd.DataFrame
+        Design matrix containing factor columns.
+    residuals : np.ndarray
+        Residuals from the fitted model (length n).
+    factors : List[Factor]
+        Factor definitions (used to identify factor columns in *design*).
+    model_terms : List[str]
+        Fitted model terms, used to compute df_model (intercept ``'1'``
+        counts as one parameter).
+
     Returns
     -------
     float or None
-        LOF p-value, or None if cannot be computed
-    
+        p-value from the LOF F-test, or ``None`` if pure error is
+        unavailable or degrees of freedom are insufficient.
+
     Notes
     -----
-    Currently not implemented. Full LOF testing requires:
-    - Partitioning residual SS into pure error and lack-of-fit
-    - Computing appropriate F-statistic
-    - Accounting for design structure (replicate groups)
-    
-    This is complex and requires careful handling of design replicates.
-    For now, this function always returns None.
-    
-    TODO: Implement proper LOF test using residual decomposition.
+    Replicate groups are identified by rounding continuous factor values to
+    six decimal places before grouping, so floating-point noise in nominally
+    identical settings does not create spurious unique groups.
+
+    Degrees of freedom::
+
+        df_PE  = sum over replicate groups of (n_group - 1)
+        df_LOF = df_resid - df_PE  =  (n - n_params) - df_PE
+
+    where ``n_params = len(model_terms)`` (``'1'`` is counted as one term).
+
+    The F-statistic is::
+
+        F = (SS_LOF / df_LOF) / (SS_PE / df_PE)
+
+    References
+    ----------
+    .. [1] Montgomery, D.C. (2017). *Design and Analysis of Experiments*,
+           9th ed. Section 3.5: The Regression Approach to the Analysis of
+           Variance.
     """
-    # Placeholder: LOF testing not yet implemented
-    return None
+    from scipy import stats as scipy_stats
+
+    factor_names = [f.name for f in factors]
+    available_cols = [c for c in factor_names if c in design.columns]
+    if not available_cols:
+        return None
+
+    factor_data = design[available_cols].copy()
+
+    # Round continuous columns to suppress floating-point noise in replicates
+    for f in factors:
+        if f.is_continuous() and f.name in factor_data.columns:
+            factor_data[f.name] = factor_data[f.name].round(6)
+
+    # Build replicate group labels from the rounded factor settings
+    group_labels = factor_data.apply(
+        lambda row: tuple(row[c] for c in available_cols), axis=1
+    )
+
+    # Pure error: within-group SS around the group mean residual
+    n = len(residuals)
+    residuals_arr = np.asarray(residuals, dtype=float)
+    ss_resid = float(np.sum(residuals_arr ** 2))
+
+    ss_pe = 0.0
+    df_pe = 0
+
+    for _key, group_idx in group_labels.groupby(group_labels).groups.items():
+        group_res = residuals_arr[group_idx]
+        if len(group_res) < 2:
+            continue  # Single run — no pure error contribution
+        group_mean = float(np.mean(group_res))
+        ss_pe += float(np.sum((group_res - group_mean) ** 2))
+        df_pe += len(group_res) - 1
+
+    # No replicates found — cannot compute LOF
+    if df_pe == 0:
+        return None
+
+    # df_resid = n - n_params; '1' is already one term in model_terms
+    n_params = len(model_terms)
+    df_resid = n - n_params
+
+    if df_resid <= 0:
+        return None
+
+    ss_lof = ss_resid - ss_pe
+    df_lof = df_resid - df_pe
+
+    if df_lof <= 0 or ss_pe <= 0 or ss_lof < 0:
+        return None
+
+    ms_lof = ss_lof / df_lof
+    ms_pe = ss_pe / df_pe
+
+    if ms_pe <= 0:
+        return None
+
+    f_stat = ms_lof / ms_pe
+    p_value = float(scipy_stats.f.sf(f_stat, df_lof, df_pe))
+    return p_value
 
 
 def _add_aliasing_diagnostics(

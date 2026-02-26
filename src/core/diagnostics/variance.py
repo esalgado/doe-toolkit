@@ -493,31 +493,31 @@ def identify_high_variance_regions(
 def compute_fraction_of_design_space(
     pred_var: np.ndarray,
     threshold: float,
-    n_grid_points: int = 1000,
 ) -> float:
     """
-    Estimate fraction of design space with prediction variance ≤ threshold.
+    Compute the fraction of design points with prediction variance ≤ threshold.
 
     Parameters
     ----------
     pred_var : np.ndarray
-        Prediction variances at design points.
+        Prediction variances at design points (e.g. from
+        ``compute_prediction_variance``).
     threshold : float
         Variance threshold.
-    n_grid_points : int
-        Unused in this simple version; reserved for future Monte-Carlo
-        implementation.
 
     Returns
     -------
     float
-        Empirical fraction of design points with variance ≤ threshold.
+        Fraction of design points (in [0, 1]) whose prediction variance
+        does not exceed *threshold*.
 
     Notes
     -----
-    This uses the empirical CDF of the design points as an approximation.
-    A Monte-Carlo grid evaluation would be more accurate but is out of scope
-    for this helper.
+    This is an empirical estimate based on the design points themselves.
+    It approximates the true fraction of the design *space* only when the
+    design points are reasonably space-filling.  For a more accurate
+    estimate, evaluate prediction variance on a dense prediction grid and
+    pass those values instead.
     """
     return float(np.mean(pred_var <= threshold))
 

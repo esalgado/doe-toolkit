@@ -416,42 +416,84 @@ def get_standard_generators(k: int, p: int, resolution: int) -> Optional[List[Tu
     return None
 
 
+def _translate_algebraic_term(term: str, mapper: FactorMapper) -> str:
+    """
+    Translate a concatenated-letter algebraic term to real factor names.
+
+    Single letters map to their factor name; multi-letter terms (interactions)
+    become ``'*'``-joined factor names.
+
+    Parameters
+    ----------
+    term : str
+        Algebraic term, e.g. ``'A'``, ``'BC'``, ``'ACD'``.
+    mapper : FactorMapper
+        Bidirectional symbol<->name mapper.
+
+    Returns
+    -------
+    str
+        Translated term, e.g. ``'Temperature'``, ``'Pressure*Time'``.
+    """
+    return '*'.join(mapper.to_real(letter) for letter in term)
+
+
 def format_alias_table(
     alias_structure: Dict[str, List[str]],
-    mapper: Optional[FactorMapper] = None
+    mapper: Optional[FactorMapper] = None,
 ) -> pd.DataFrame:
     """
-    Format alias structure as readable table.
-    
+    Format alias structure as a readable table.
+
     Parameters
     ----------
     alias_structure : Dict[str, List[str]]
-        Alias structure from AliasingEngine
+        Alias structure from ``AliasingEngine``.
     mapper : FactorMapper, optional
-        If provided, translates to real factor names
-    
+        When provided, algebraic symbols (``'A'``, ``'BC'``, …) are
+        translated to real factor names (``'Temperature'``,
+        ``'Pressure*Time'``, …) in both the ``Effect`` and
+        ``Aliased_With`` columns.
+
     Returns
     -------
     pd.DataFrame
-        Formatted alias table
+        Columns: ``Effect``, ``Aliased_With``.
+        Rows are sorted by effect order (main effects first, then 2FI, etc.).
+
+    Examples
+    --------
+    >>> engine = AliasingEngine(5, [("E", "ABCD")])
+    >>> df = format_alias_table(engine.alias_structure)
+    >>> df.head()
+       Effect Aliased_With
+    0       A         BCDE
+    1       B         ACDE
+
+    >>> mapper = FactorMapper(factors)
+    >>> df = format_alias_table(engine.alias_structure, mapper=mapper)
+    >>> df.head()
+              Effect            Aliased_With
+    0    Temperature  Pressure*Time*Feed*Cat
     """
     rows = []
-    
-    for effect, aliases in sorted(alias_structure.items(), 
-                                   key=lambda x: (len(x[0]), x[0])):
-        effect_display = effect
-        aliases_display = ' + '.join(aliases) if aliases else 'Clear'
-        
-        # Translate if mapper provided
+
+    for effect, aliases in sorted(
+        alias_structure.items(), key=lambda x: (len(x[0]), x[0])
+    ):
         if mapper:
-            # This is simplified - full translation would expand interactions
-            pass
-        
-        rows.append({
-            'Effect': effect_display,
-            'Aliased_With': aliases_display
-        })
-    
+            effect_display = _translate_algebraic_term(effect, mapper)
+            aliases_display = (
+                ' + '.join(_translate_algebraic_term(a, mapper) for a in aliases)
+                if aliases
+                else 'Clear'
+            )
+        else:
+            effect_display = effect
+            aliases_display = ' + '.join(aliases) if aliases else 'Clear'
+
+        rows.append({'Effect': effect_display, 'Aliased_With': aliases_display})
+
     return pd.DataFrame(rows)
 
 

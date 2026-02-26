@@ -200,8 +200,8 @@ class ANOVAAnalysis:
         
         self.current_model = model_terms
         self._validate_degrees_of_freedom(model_terms)
-        
         if self.design_structure['is_split_plot']:
+            self._validate_split_plot_degrees_of_freedom()
             results = self._fit_mixed_effects_model(model_terms)
         else:
             results = self._fit_fixed_effects_model(model_terms)
@@ -214,10 +214,8 @@ class ANOVAAnalysis:
         formula = self._build_formula(model_terms)
 
         if self.design_structure['has_blocking'] and not self.block_as_random:
-            # Avoid using C(Block) in the formula string: a factor named "C"
-            # would shadow Patsy's categorical function and cause a
-            # 'Series object is not callable' error.  Pre-cast Block to str
-            # so Patsy treats it as categorical automatically.
+            # Cast Block to str so patsy treats it as categorical without
+            # requiring C() notation (which conflicts with factors named "C").
             fit_data = self.data.copy()
             fit_data['Block'] = fit_data['Block'].astype(str)
             formula += " + Block"
@@ -345,7 +343,7 @@ class ANOVAAnalysis:
         n_runs = len(self.data)
         n_params = len([t for t in model_terms if t != '1']) + 1
         df_error = n_runs - n_params
-        
+
         if df_error < 0:
             raise ValueError(
                 f"Model is oversaturated: {n_runs} runs for {n_params} parameters "
@@ -358,11 +356,15 @@ class ANOVAAnalysis:
             )
         elif df_error < 3:
             warnings.warn(f"Low df_error = {df_error}: Inference may be unreliable")
-            
-            if self.design_structure['is_split_plot']:
-                n_wp = self.data[self.design_structure['whole_plot_column']].nunique()
-                if n_wp < 3:
-                    warnings.warn(f"Only {n_wp} whole-plots, need ≥3")
+
+    def _validate_split_plot_degrees_of_freedom(self) -> None:
+        """Warn when the whole-plot stratum has too few groups for reliable inference."""
+        whole_plot_col = self.design_structure.get('whole_plot_column')
+        if whole_plot_col is None:
+            return
+        n_wp = self.data[whole_plot_col].nunique()
+        if n_wp < 3:
+            warnings.warn(f"Only {n_wp} whole-plots, need ≥3 for reliable whole-plot inference.")
     
     def update_model(
         self,

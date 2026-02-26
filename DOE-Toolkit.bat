@@ -31,6 +31,11 @@ echo  To stop the app, close this window.
 echo.
 echo ============================================================
 
+REM Wait briefly then open browser once before launching Streamlit.
+REM Using headless mode to prevent Streamlit from opening its own browser tab.
+timeout /t 2 /nobreak >nul
+start "" http://localhost:8501
+
 REM Launch Streamlit using the bundled environment.
 REM No subprocess spawning, no recursion - streamlit.exe is a real executable.
 "env\Scripts\streamlit.exe" run src\ui\app.py ^

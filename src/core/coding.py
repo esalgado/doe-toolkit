@@ -232,27 +232,28 @@ def is_design_coded(
     >>> is_design_coded(design_actual, factors)
     False
     """
+    coded_votes = 0
+    actual_votes = 0
+
     for factor in factors:
         if factor.is_continuous() and factor.name in design.columns:
             values = design[factor.name].values
             min_val, max_val = factor.levels
-            
-            # Check if values are in coded range [-1-tol, +1+tol]
+
             coded_min = -1 - tolerance
             coded_max = 1 + tolerance
-            
+
             if values.min() >= coded_min and values.max() <= coded_max:
-                # Values appear coded
-                return True
+                coded_votes += 1
             elif values.min() >= min_val - tolerance and values.max() <= max_val + tolerance:
-                # Values appear to be in actual range
-                return False
-            else:
-                # Values outside both ranges - assume actual
-                return False
-    
-    # No continuous factors or couldn't determine
-    return False
+                actual_votes += 1
+            # else: ambiguous factor, abstain
+
+    if coded_votes == 0 and actual_votes == 0:
+        # No continuous factors found or all were ambiguous
+        return False
+
+    return coded_votes > actual_votes
 
 
 def encode_settings_dict(
