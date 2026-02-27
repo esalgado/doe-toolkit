@@ -586,6 +586,21 @@ else:
                     st.code(f"{gen[0]} = {gen[1]}")
                 else:
                     st.code(gen)
+
+    # Alias / correlation structure (uses design-level model terms from Step 2)
+    _model_terms = st.session_state.get('model_terms') or ['1'] + [f.name for f in factors]
+    try:
+        from src.ui.components.alias_display import display_alias_correlation
+        display_alias_correlation(
+            design=design,
+            factors=factors,
+            model_terms=_model_terms,
+            design_type=design_type,
+            alias_structure=metadata.get('alias_structure'),
+            resolution=metadata.get('resolution'),
+        )
+    except Exception as _alias_err:
+        st.warning(f"Could not render alias structure: {_alias_err}")
     
     # Show constraints for D-Optimal designs
     if design_type == "D-Optimal" and st.session_state.get('constraints'):
