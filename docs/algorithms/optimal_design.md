@@ -326,11 +326,12 @@ If rank < p: Design is singular (cannot estimate all parameters)
 
 ```python
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
-from src.core.optimal_design_v3 import generate_d_optimal_design
+from src.core.optimal.optimizer import OptimalDesignOptimizer
+from src.core.optimal.criteria import DOptimalityCriterion
 
 # Define factors
 factors = [
-    Factor("Temperature", FactorType.CONTINUOUS, 
+    Factor("Temperature", FactorType.CONTINUOUS,
            ChangeabilityLevel.EASY, levels=[100, 200]),
     Factor("Pressure", FactorType.CONTINUOUS,
            ChangeabilityLevel.EASY, levels=[10, 50]),
@@ -339,14 +340,15 @@ factors = [
 ]
 
 # Generate D-optimal design
-result = generate_d_optimal_design(
+optimizer = OptimalDesignOptimizer(
     factors=factors,
     model_type='quadratic',
     n_runs=20,
+    criterion=DOptimalityCriterion(),
     seed=42
 )
+result = optimizer.optimize()
 
-print(f"D-efficiency vs CCD: {result.d_efficiency_vs_benchmark:.2f}%")
 print(f"Condition number: {result.condition_number:.2f}")
 print(f"Converged by: {result.converged_by}")
 print(f"\n{result.design_actual}")
@@ -354,7 +356,6 @@ print(f"\n{result.design_actual}")
 
 **Expected output:**
 ```
-D-efficiency vs CCD: 108.3%
 Condition number: 12.4
 Converged by: stability
 
@@ -367,11 +368,11 @@ Converged by: stability
 ### Example 2: Constrained Design (Mixture)
 
 ```python
-from src.core.optimal_design_v3 import LinearConstraint
+from src.core.optimal.constraints import LinearConstraint
 
 # Mixture factors (must sum to 1)
 factors = [
-    Factor("Component_A", FactorType.CONTINUOUS, 
+    Factor("Component_A", FactorType.CONTINUOUS,
            ChangeabilityLevel.EASY, levels=[0, 1]),
     Factor("Component_B", FactorType.CONTINUOUS,
            ChangeabilityLevel.EASY, levels=[0, 1]),
@@ -386,13 +387,15 @@ constraint = LinearConstraint(
     constraint_type='eq'
 )
 
-result = generate_d_optimal_design(
+optimizer = OptimalDesignOptimizer(
     factors=factors,
     model_type='quadratic',
     n_runs=15,
+    criterion=DOptimalityCriterion(),
     constraints=[constraint],
     seed=42
 )
+result = optimizer.optimize()
 
 # Verify constraint satisfaction
 for i in range(result.n_runs):
@@ -407,7 +410,7 @@ for i in range(result.n_runs):
 ```python
 # Chemical process with safety limits
 factors = [
-    Factor("Temperature", FactorType.CONTINUOUS, 
+    Factor("Temperature", FactorType.CONTINUOUS,
            ChangeabilityLevel.EASY, levels=[150, 250]),
     Factor("Pressure", FactorType.CONTINUOUS,
            ChangeabilityLevel.EASY, levels=[10, 50]),
@@ -430,66 +433,24 @@ constraints = [
     )
 ]
 
-result = generate_d_optimal_design(
+optimizer = OptimalDesignOptimizer(
     factors=factors,
     model_type='interaction',
     n_runs=15,
+    criterion=DOptimalityCriterion(),
     constraints=constraints,
     seed=42
 )
+result = optimizer.optimize()
 ```
 
 ---
 
 ## Configuration Options
 
-### CandidatePoolConfig
-
-```python
-from src.core.optimal_design_v3 import CandidatePoolConfig
-
-config = CandidatePoolConfig(
-    n_lhs_raw=500,           # Initial LHS sample size
-    n_lhs_final=100,         # Final LHS candidates after stratification
-    boundary_threshold=0.75, # Points with max|x| ≥ 0.75 are "boundary"
-    boundary_ratio=0.8,      # 80% boundary, 20% interior
-    include_vertices=True,   # Include 2^k vertices
-    include_axial=True,      # Include 2k axial points
-    include_center=True,     # Include center point
-    alpha_axial=1.0          # Distance of axial points (1.0 = on boundaries)
-)
-
-result = generate_d_optimal_design(
-    factors=factors,
-    model_type='quadratic',
-    n_runs=20,
-    candidate_config=config,
-    seed=42
-)
-```
-
-### OptimizerConfig
-
-```python
-from src.core.optimal_design_v3 import OptimizerConfig
-
-config = OptimizerConfig(
-    max_iterations=200,                    # Safety limit
-    relative_improvement_tolerance=1e-4,   # 0.01% improvement threshold
-    stability_window=15,                   # Iterations with no improvement
-    n_random_starts=3,                     # Independent optimizations
-    max_candidates_per_row=50,             # Restrict search per iteration
-    use_sherman_morrison=True              # Use fast updates (recommended)
-)
-
-result = generate_d_optimal_design(
-    factors=factors,
-    model_type='quadratic',
-    n_runs=20,
-    optimizer_config=config,
-    seed=42
-)
-```
+Configuration dataclasses (`CandidatePoolConfig`, `OptimizerConfig`) live in
+`src/core/optimal/` — see the module docstrings for the full list of fields
+and defaults.
 
 ---
 
@@ -577,8 +538,7 @@ UserWarning: High condition number (347.2). Design may be ill-conditioned.
    - No disallowed combinations (e.g., "If Material=A, then Temp<180")
    - No nonlinear constraints (e.g., x₁² + x₂² ≤ 1)
 
-3. **D-optimality only**
-   - I-optimal (minimize prediction variance) not available
+3. **D-optimality and I-optimality supported**
    - A-optimal (minimize trace) not available
    - G-optimal (minimize maximum prediction variance) not available
 
@@ -597,10 +557,9 @@ UserWarning: High condition number (347.2). Design may be ill-conditioned.
    - Logic constraints (if-then rules)
    - Indicator variable approach
 
-3. **Alternative optimality criteria**
-   - I-optimal (better for prediction)
-   - A-optimal (better for parameter estimation)
-   - User-selectable criterion
+3. **Additional optimality criteria**
+   - A-optimal (minimize trace, better for parameter estimation)
+   - User-selectable criterion (D and I currently supported)
 
 4. **Fedorov exchange algorithm**
    - Alternative to CEXCH

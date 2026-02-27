@@ -26,6 +26,7 @@ from scipy.optimize import minimize, LinearConstraint as ScipyLinearConstraint
 
 from src.core.factors import Factor, FactorType
 from src.core.analysis import ANOVAResults
+from src.core.optimal.constraints import LinearConstraint
 
 
 # ============================================================
@@ -782,18 +783,6 @@ def optimize_desirability(
 # ============================================================
 # SECTION 5: HELPER FUNCTIONS
 # ============================================================
-
-
-@dataclass
-class LinearConstraint:
-    """
-    Linear constraint on factors (reused from optimal_design.py).
-    
-    Represents constraints like: sum(coefficients[i] * x[i]) <= bound
-    """
-    coefficients: Dict[str, float]
-    bound: float
-    constraint_type: Literal['le', 'ge', 'eq'] = 'le'
 
 
 def _convert_linear_constraints(

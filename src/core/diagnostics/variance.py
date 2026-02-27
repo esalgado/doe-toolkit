@@ -707,14 +707,15 @@ def compute_design_quality_metrics(
     Returns
     -------
     Dict[str, float]
-        Keys: ``'d_efficiency'``, ``'condition_number'``,
-        ``'avg_prediction_variance'``, ``'max_prediction_variance'``,
-        ``'prediction_variance_ratio'``, and optionally ``'i_criterion'``.
+        Keys: ``'log_det_xTx'`` (log-determinant of X'X; higher is better),
+        ``'condition_number'``, ``'avg_prediction_variance'``,
+        ``'max_prediction_variance'``, ``'prediction_variance_ratio'``,
+        and optionally ``'i_criterion'``.
 
     Examples
     --------
     >>> metrics = compute_design_quality_metrics(design, factors, model_terms)
-    >>> print(f"D-efficiency: {metrics['d_efficiency']:.1f}%")
+    >>> print(f"log|X'X|: {metrics['log_det_xTx']:.3f}")
     """
     X, _ = build_model_matrix(design, factors, model_terms)
     XtX = X.T @ X
@@ -722,11 +723,11 @@ def compute_design_quality_metrics(
     metrics: Dict[str, float] = {}
 
     try:
-        det_XtX = np.linalg.det(XtX)
-        metrics["d_efficiency"] = 100.0 if det_XtX > 0 else 0.0
+        sign, logdet = np.linalg.slogdet(XtX)
+        metrics["log_det_xTx"] = float(logdet) if sign > 0 else -np.inf
         metrics["condition_number"] = float(np.linalg.cond(XtX))
     except Exception:
-        metrics["d_efficiency"] = 0.0
+        metrics["log_det_xTx"] = -np.inf
         metrics["condition_number"] = np.inf
 
     try:
