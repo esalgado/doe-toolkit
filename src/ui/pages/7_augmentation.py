@@ -85,7 +85,13 @@ if st.session_state.get('augmented_design') is not None:
     # Check if we have data for the augmented design yet
     design = get_active_design()
     
-    if len(design) == augmented.n_runs_total:
+    results_displayed = st.session_state.get('augmentation_results_displayed', False)
+
+    if results_displayed:
+        # Still on the results screen — re-render the full results view
+        display_plan_execution(st.session_state['selected_augmentation_plan'])
+
+    elif len(design) == augmented.n_runs_total:
         # User has uploaded new data
         st.success(
             "✅ **Augmented design data imported!**\n\n"
@@ -103,12 +109,12 @@ if st.session_state.get('augmented_design') is not None:
         with col1:
             if st.button("← Back to Analysis", width='stretch'):
                 st.session_state['current_step'] = 5
-                st.switch_page("pages/5_analyze.py")
+                st.switch_page("pages/6_analyze.py")
         
         with col2:
             if st.button("Optimize →", type="primary", width='stretch'):
                 st.session_state['current_step'] = 7
-                st.switch_page("pages/7_optimize.py")
+                st.switch_page("pages/8_optimize.py")
     
     else:
         # Still waiting for new experimental data
@@ -185,7 +191,7 @@ if not st.session_state.get('quality_report'):
     with col1:
         if st.button("📊 Go to Analysis", type="primary", width='stretch'):
             st.session_state['current_step'] = 5
-            st.switch_page("pages/5_analyze.py")
+            st.switch_page("pages/6_analyze.py")
     
     with col2:
         # Allow proceeding without analysis

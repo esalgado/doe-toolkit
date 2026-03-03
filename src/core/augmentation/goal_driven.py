@@ -131,9 +131,6 @@ def recommend_from_goal(
     if context.budget_constraint:
         plans = [p for p in plans if p.n_runs_to_add <= context.budget_constraint]
     
-    # Apply user adjustments
-    plans = _apply_user_adjustments(plans, context.user_adjustments)
-    
     # Rank plans
     plans = _rank_goal_plans(plans, context)
     
@@ -626,26 +623,6 @@ def _refine_with_diagnostics(
             plan.metadata['diagnostic_warnings'] = warnings
         if suggestions:
             plan.metadata['diagnostic_suggestions'] = suggestions
-    
-    return plans
-
-
-def _apply_user_adjustments(
-    plans: List[AugmentationPlan],
-    user_adjustments: Dict
-) -> List[AugmentationPlan]:
-    """
-    Apply user-requested adjustments to plans.
-    
-    Supported adjustments:
-    - n_runs: Override number of runs
-    - factor_to_fold: Specify factor for partial foldover
-    - model_terms: Specify terms to add
-    - expand_ranges: New factor ranges (future)
-    """
-    
-    # User adjustments already applied during plan creation
-    # This is a hook for future dynamic adjustments
     
     return plans
 

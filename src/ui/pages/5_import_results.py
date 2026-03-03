@@ -209,14 +209,20 @@ if uploaded_file:
                 st.session_state['design'] = parse_result.design_data
                 st.session_state['response_definitions'] = parse_result.response_definitions
                 st.session_state['design_metadata'] = parse_result.metadata
-                
+
+                # Restore design-level model terms from CSV header so that
+                # analysis starts pre-populated with the intended model.
+                _csv_terms = parse_result.model_terms or {}
+                if '__design__' in _csv_terms:
+                    st.session_state['model_terms'] = _csv_terms['__design__']
+
                 # Extract responses
                 responses = extract_responses_from_design(
                     parse_result.design_data,
                     parse_result.factors,
                     parse_result.response_definitions
                 )
-                
+
                 if responses:
                     st.session_state['responses'] = responses
                     st.session_state['response_names'] = list(responses.keys())
@@ -228,7 +234,7 @@ if uploaded_file:
                     st.session_state['response_names'] = []
                     st.warning("⚠️ No response data found in CSV (columns are empty)")
                     st.info("👉 Design imported! You can view the design or add response data later. Click 'Analyze Design →' below.")
-                
+
                 st.rerun()
         
         # PATH 2: Active session with existing factors
@@ -257,7 +263,12 @@ if uploaded_file:
                         st.session_state['factors'],
                         parse_result.response_definitions
                     )
-                    
+
+                    # Restore design-level model terms from CSV header.
+                    _csv_terms = parse_result.model_terms or {}
+                    if '__design__' in _csv_terms:
+                        st.session_state['model_terms'] = _csv_terms['__design__']
+
                     if responses:
                         st.session_state['responses'] = responses
                         st.session_state['response_names'] = list(responses.keys())
@@ -270,7 +281,7 @@ if uploaded_file:
                         st.session_state['response_names'] = []
                         st.warning("⚠️ No response data in CSV")
                         st.info("👉 Click 'Analyze Design →' to view design structure.")
-                    
+
                     st.rerun()
             
             else:

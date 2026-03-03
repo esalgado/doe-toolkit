@@ -1,24 +1,13 @@
 """
-Alias and correlation display component.
+Alias and correlation display component for design preview and diagnostics.
 
-Provides two display modes:
-
-1. **Fractional factorial** — exact aliasing from the defining relation,
-   displayed as a heatmap of |correlation| between model-matrix columns
-   plus a table of aliased-effect pairs.
-
-2. **All other designs** (D-optimal, RSM, full factorial, LHS) — partial
-   aliasing shown as the absolute column-correlation matrix of the model
-   matrix, with pairs above the 0.5 threshold flagged in the table.
-
-The heatmap uses a continuous blue (|r|=0) to red (|r|=1) colour scale.
-Diagonal cells (self-correlation = 1) are excluded from the flagged-pair
-table to avoid noise.
+Provides a shared ``display_alias_correlation`` function that renders:
+- A blue-to-red absolute-correlation heatmap for all design types.
+- A flagged pairs table for |r| >= 0.5.
+- Exact alias chains (for fractional factorial designs).
 """
 
-from __future__ import annotations
-
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -26,382 +15,449 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.core.factors import Factor
-from src.core.diagnostics.variance import build_model_matrix
-from src.ui.components.model_builder import format_term_for_display
 
-# Threshold above which a pair is flagged as partially aliased
-_ALIAS_THRESHOLD: float = 0.5
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _correlation_matrix(
-    design: pd.DataFrame,
-    factors: List[Factor],
-    model_terms: List[str],
-) -> Tuple[np.ndarray, List[str]]:
-    """
-    Build the absolute column-correlation matrix of the model matrix.
-
-    Parameters
-    ----------
-    design : pd.DataFrame
-        Design matrix with factor columns.
-    factors : List[Factor]
-        Factor definitions.
-    model_terms : List[str]
-        Model terms to include (intercept excluded from display).
-
-    Returns
-    -------
-    corr_abs : np.ndarray
-        Shape (p, p) absolute correlation matrix (diagonal = 1).
-    col_names : List[str]
-        Column labels corresponding to rows/cols of corr_abs.
-    """
-    display_terms = [t for t in model_terms if t != "1"]
-    if not display_terms:
-        return np.array([[]]), []
-
-    # Build model matrix including intercept so categorical expansion works,
-    # then drop the intercept column before correlating.
-    X, raw_names = build_model_matrix(design, factors, model_terms)
-
-    non_intercept_idx = [i for i, n in enumerate(raw_names) if n != "Intercept"]
-    X = X[:, non_intercept_idx]
-    col_names = [raw_names[i] for i in non_intercept_idx]
-
-    if X.shape[1] == 0:
-        return np.array([[]]), []
-
-    # Standardise columns before correlating
-    stds = X.std(axis=0)
-    stds[stds == 0] = 1.0  # avoid divide-by-zero for constant columns
-    X_std = (X - X.mean(axis=0)) / stds
-
-    corr = (X_std.T @ X_std) / X.shape[0]
-    corr_abs = np.abs(corr)
-
-    return corr_abs, col_names
-
-
-def _make_heatmap(
-    corr_abs: np.ndarray,
-    col_names: List[str],
-    title: str = "Term Correlation (|r|)",
-) -> go.Figure:
-    """
-    Build a Plotly heatmap with blue to red continuous colour scale.
-
-    Parameters
-    ----------
-    corr_abs : np.ndarray
-        Absolute correlation matrix.
-    col_names : List[str]
-        Axis labels.
-    title : str
-        Figure title.
-
-    Returns
-    -------
-    go.Figure
-    """
-    display_names = [format_term_for_display(n) for n in col_names]
-    z_rounded = np.round(corr_abs, 3)
-
-    fig = go.Figure(
-        go.Heatmap(
-            z=z_rounded,
-            x=display_names,
-            y=display_names,
-            zmin=0,
-            zmax=1,
-            colorscale=[
-                [0.0, "#1a6faf"],   # blue  — no correlation
-                [0.5, "#d4d4d4"],   # grey  — moderate
-                [1.0, "#c0392b"],   # red   — full aliasing
-            ],
-            colorbar=dict(
-                title="|r|",
-                tickvals=[0, 0.25, 0.5, 0.75, 1.0],
-                ticktext=["0", "0.25", "0.5*", "0.75", "1.0"],
-                len=0.8,
-            ),
-            hovertemplate="%{y} \u00d7 %{x}<br>|r| = %{z}<extra></extra>",
-            text=z_rounded,
-            texttemplate="%{text}",
-            textfont=dict(size=10),
-        )
-    )
-
-    n = len(col_names)
-    fig.update_layout(
-        title=dict(text=title, font=dict(size=13)),
-        xaxis=dict(tickangle=-45, tickfont=dict(size=10)),
-        yaxis=dict(tickfont=dict(size=10), autorange="reversed"),
-        height=max(300, 60 + n * 35),
-        margin=dict(l=10, r=10, t=40, b=10),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#e0e0e0"),
-    )
-
-    return fig
-
-
-def _flagged_pairs_table(
-    corr_abs: np.ndarray,
-    col_names: List[str],
-    threshold: float = _ALIAS_THRESHOLD,
-) -> pd.DataFrame:
-    """
-    Build a table of term pairs with |r| >= threshold, excluding diagonal.
-
-    Parameters
-    ----------
-    corr_abs : np.ndarray
-        Absolute correlation matrix.
-    col_names : List[str]
-        Column labels.
-    threshold : float
-        Minimum |r| to include.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: Term A, Term B, |r|, Flag.
-        Sorted descending by |r|.
-    """
-    rows = []
-    n = len(col_names)
-    for i in range(n):
-        for j in range(i + 1, n):
-            r = corr_abs[i, j]
-            if r >= threshold:
-                flag = "\u26a0\ufe0f High" if r >= 0.8 else "* Moderate"
-                rows.append(
-                    {
-                        "Term A": format_term_for_display(col_names[i]),
-                        "Term B": format_term_for_display(col_names[j]),
-                        "|r|": round(float(r), 4),
-                        "Flag": flag,
-                    }
-                )
-
-    if not rows:
-        return pd.DataFrame(columns=["Term A", "Term B", "|r|", "Flag"])
-
-    return (
-        pd.DataFrame(rows)
-        .sort_values("|r|", ascending=False)
-        .reset_index(drop=True)
-    )
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+# Threshold above which a term pair is flagged as potentially aliased
+_ALIAS_FLAG_THRESHOLD: float = 0.5
 
 
 def display_alias_correlation(
     design: pd.DataFrame,
     factors: List[Factor],
     model_terms: List[str],
-    design_type: Optional[str] = None,
-    alias_structure: Optional[Dict] = None,
+    design_type: str,
+    alias_structure: Optional[Dict[str, List[str]]] = None,
     resolution: Optional[int] = None,
-    section_title: str = "\ud83d\udd17 Alias / Correlation Structure",
+    section_title: str = "🔗 Alias / Correlation Structure",
     expanded: bool = False,
 ) -> None:
     """
-    Render alias / partial-aliasing information inside a Streamlit expander.
+    Render alias and correlation structure inside a Streamlit expander.
 
-    For every design type the absolute column-correlation matrix of the
-    model matrix is computed and shown as a heatmap plus a flagged-pairs
-    table.  For fractional factorial designs an additional exact-aliasing
-    section is shown above the heatmap using the stored alias structure.
+    For all design types a model-term correlation heatmap and flagged-pairs
+    table are shown.  For fractional factorial designs the exact alias chains
+    stored in *alias_structure* are also displayed.
 
     Parameters
     ----------
     design : pd.DataFrame
-        Design matrix with factor columns.
+        Design matrix (actual factor values).
     factors : List[Factor]
-        Factor definitions.
+        Factor definitions used to build the model matrix.
     model_terms : List[str]
-        Model terms to analyse (intercept ``'1'`` is handled internally).
-    design_type : str, optional
-        Design type string (e.g. ``'Fractional Factorial'``).
-    alias_structure : dict, optional
-        Pre-computed alias structure (algebraic) from ``AliasingEngine`` or
-        ``FractionalFactorial.alias_structure``.  Only relevant when
-        ``design_type == 'Fractional Factorial'``.
+        Model terms (patsy notation) to include in the correlation matrix.
+        The intercept term ``'1'`` is automatically excluded.
+    design_type : str
+        Design type label (e.g. ``'Fractional Factorial'``, ``'D-Optimal'``).
+    alias_structure : Dict[str, List[str]], optional
+        Pre-computed alias chains from the fractional-factorial engine.
+        Displayed only when *design_type* contains ``'Fractional'``.
     resolution : int, optional
-        Design resolution.  Only relevant for fractional factorial.
-    section_title : str
-        Title shown on the expander.
-    expanded : bool
-        Whether the expander starts open.
+        Design resolution; displayed in the header when provided.
+    section_title : str, optional
+        Title shown on the expander header.
+    expanded : bool, optional
+        Whether the expander is open by default.
 
     Returns
     -------
     None
-        All output is rendered directly in Streamlit.
+        Renders content directly into the active Streamlit context.
+
+    Examples
+    --------
+    >>> display_alias_correlation(
+    ...     design=design_df,
+    ...     factors=factors,
+    ...     model_terms=["A", "B", "A*B"],
+    ...     design_type="Fractional Factorial",
+    ...     alias_structure={"A": ["BCD"], "B": ["ACD"]},
+    ...     resolution=4,
+    ... )
     """
-    display_terms = [t for t in model_terms if t != "1"]
-    if not display_terms:
-        return
-
     with st.expander(section_title, expanded=expanded):
-
-        # --- Fractional factorial: exact aliasing section -----------------
-        is_fractional = (design_type or "").lower().startswith("fractional")
-        if is_fractional and alias_structure:
-            _render_exact_aliasing(alias_structure, factors, resolution)
-            st.divider()
-
-        # --- Correlation heatmap (all design types) -----------------------
-        try:
-            corr_abs, col_names = _correlation_matrix(design, factors, model_terms)
-        except Exception as e:
-            st.warning(f"Could not compute correlation matrix: {e}")
-            return
-
-        if corr_abs.size == 0 or len(col_names) == 0:
-            st.info("No non-intercept terms to correlate.")
-            return
-
-        subheader = (
-            "Exact + Partial Aliasing (Correlation Matrix)"
-            if is_fractional
-            else "Term Correlation Matrix"
+        _render_body(
+            design=design,
+            factors=factors,
+            model_terms=model_terms,
+            design_type=design_type,
+            alias_structure=alias_structure,
+            resolution=resolution,
         )
-        st.markdown(f"**{subheader}**")
-        st.caption(
-            "Colour encodes |r| between model-matrix columns: "
-            "blue = 0 (orthogonal), red = 1 (fully aliased). "
-            "Pairs with |r| \u2265 0.5 are flagged below."
-        )
-
-        fig = _make_heatmap(corr_abs, col_names)
-        st.plotly_chart(fig, use_container_width=True, theme=None)
-
-        # --- Flagged pairs table ------------------------------------------
-        flagged = _flagged_pairs_table(corr_abs, col_names)
-
-        if flagged.empty:
-            st.success(
-                "\u2705 No term pairs exceed |r| = 0.5 \u2014 "
-                "design is well orthogonalised."
-            )
-        else:
-            st.markdown(
-                f"**Flagged Pairs (|r| \u2265 0.5)** \u2014 {len(flagged)} pair(s)"
-            )
-            st.dataframe(flagged, hide_index=True, use_container_width=True)
-
-            high_count = int((flagged["|r|"] >= 0.8).sum())
-            if high_count:
-                st.warning(
-                    f"\u26a0\ufe0f {high_count} pair(s) with |r| \u2265 0.8 \u2014 "
-                    "these terms are highly correlated. Consider removing "
-                    "redundant terms or augmenting the design."
-                )
 
 
 # ---------------------------------------------------------------------------
-# Internal rendering helpers
+# Private helpers
 # ---------------------------------------------------------------------------
 
 
-def _render_exact_aliasing(
-    alias_structure: Dict,
+def _render_body(
+    design: pd.DataFrame,
     factors: List[Factor],
+    model_terms: List[str],
+    design_type: str,
+    alias_structure: Optional[Dict[str, List[str]]],
     resolution: Optional[int],
 ) -> None:
-    """
-    Render exact alias chains for a fractional factorial design.
+    """Render the full alias/correlation body (no expander wrapper)."""
 
-    Uses real factor names when the alias structure is in algebraic form
-    (single uppercase letters) and a FactorMapper is constructable.
+    # Header line
+    res_label = f" — Resolution {resolution}" if resolution else ""
+    st.caption(
+        f"Design type: **{design_type}**{res_label}. "
+        "Values shown are absolute Pearson correlations between model columns."
+    )
+
+    # Build model matrix columns
+    col_matrix, col_labels = _build_model_columns(design, factors, model_terms)
+
+    if col_matrix is None or col_matrix.shape[1] < 2:
+        st.info("Not enough model terms to compute a correlation matrix.")
+        return
+
+    # Correlation matrix
+    corr = _compute_correlation_matrix(col_matrix)
+
+    # Heatmap
+    st.markdown("**Term Correlation Heatmap** (|r|)")
+    fig = _build_heatmap(corr, col_labels)
+    st.plotly_chart(fig, use_container_width=True, theme=None)
+
+    # Flagged pairs table
+    flagged = _find_flagged_pairs(corr, col_labels)
+    if flagged:
+        st.markdown(
+            f"**Flagged pairs** (|r| ≥ {_ALIAS_FLAG_THRESHOLD:.1f}) — "
+            "these terms share substantial variance:"
+        )
+        flagged_df = pd.DataFrame(
+            flagged, columns=["Term A", "Term B", "|r|"]
+        ).sort_values("|r|", ascending=False)
+        st.dataframe(flagged_df, hide_index=True, use_container_width=True)
+    else:
+        st.success(
+            f"✅ No term pairs with |r| ≥ {_ALIAS_FLAG_THRESHOLD:.1f}. "
+            "Model terms are well-separated."
+        )
+
+    # Exact alias chains (fractional factorial only)
+    if "Fractional" in design_type and alias_structure:
+        st.divider()
+        _render_alias_chains(alias_structure, factors)
+
+
+def _build_model_columns(
+    design: pd.DataFrame,
+    factors: List[Factor],
+    model_terms: List[str],
+) -> tuple:
+    """
+    Evaluate model terms against the design matrix.
 
     Parameters
     ----------
-    alias_structure : dict
-        Mapping effect -> list of aliased effects (algebraic symbols).
+    design : pd.DataFrame
+        Design matrix with actual factor values.
     factors : List[Factor]
-        Factor definitions (used to translate algebraic to real names).
-    resolution : int, optional
-        Design resolution.
+        Factor definitions.
+    model_terms : List[str]
+        Terms in patsy-style notation; ``'1'`` is skipped.
+
+    Returns
+    -------
+    tuple[Optional[np.ndarray], List[str]]
+        ``(matrix, labels)`` where *matrix* is shape ``(n_runs, n_terms)``
+        and *labels* are display-ready term names.  Returns ``(None, [])``
+        on failure.
+
+    Notes
+    -----
+    Terms that cannot be evaluated are silently skipped.
     """
-    from src.core.aliasing import FactorMapper, _translate_algebraic_term
+    cols: List[np.ndarray] = []
+    labels: List[str] = []
 
-    st.markdown("**Exact Aliasing (Defining Relation)**")
+    for term in model_terms:
+        if term == "1":
+            continue
 
-    res_label = f"Resolution {resolution}" if resolution else "Unknown Resolution"
-    if resolution and resolution <= 3:
-        res_color = "#5c1a1a"
-        res_icon = "\U0001f534"
-    elif resolution and resolution == 4:
-        res_color = "#4a3800"
-        res_icon = "\U0001f7e1"
-    else:
-        res_color = "#0d3320"
-        res_icon = "\U0001f7e2"
+        col = _evaluate_term(term, design, factors)
+        if col is not None:
+            cols.append(col)
+            labels.append(_format_term_label(term))
 
-    st.markdown(
-        f'<div style="background:{res_color};padding:6px 12px;border-radius:4px;'
-        f'font-size:0.88rem;margin-bottom:8px;">'
-        f"{res_icon} <b>{res_label}</b>"
-        f"</div>",
-        unsafe_allow_html=True,
+    if len(cols) < 2:
+        return None, []
+
+    return np.column_stack(cols), labels
+
+
+def _evaluate_term(
+    term: str,
+    design: pd.DataFrame,
+    factors: List[Factor],
+) -> Optional[np.ndarray]:
+    """
+    Return a numeric column for *term* evaluated on *design*.
+
+    Supports main effects, two-factor interactions (``'A*B'``), and
+    quadratic terms (``'I(A**2)'``).  Returns ``None`` for any term that
+    cannot be evaluated.
+
+    Parameters
+    ----------
+    term : str
+        Model term in patsy notation.
+    design : pd.DataFrame
+        Design matrix.
+    factors : List[Factor]
+        Factor definitions for coding continuous factors.
+
+    Returns
+    -------
+    Optional[np.ndarray]
+        Numeric array of length ``n_runs``, or ``None``.
+    """
+    try:
+        # Quadratic: I(A**2)
+        if term.startswith("I(") and "**2" in term:
+            factor_name = term[2:].replace("**2)", "").strip()
+            if factor_name not in design.columns:
+                return None
+            return design[factor_name].values.astype(float) ** 2
+
+        # Interaction: A*B
+        if "*" in term:
+            parts = [p.strip() for p in term.split("*")]
+            cols = []
+            for part in parts:
+                if part not in design.columns:
+                    return None
+                cols.append(design[part].values.astype(float))
+            result = cols[0]
+            for c in cols[1:]:
+                result = result * c
+            return result
+
+        # Main effect
+        if term in design.columns:
+            return design[term].values.astype(float)
+
+    except Exception:
+        pass
+
+    return None
+
+
+def _compute_correlation_matrix(matrix: np.ndarray) -> np.ndarray:
+    """
+    Compute absolute Pearson correlation matrix.
+
+    Parameters
+    ----------
+    matrix : np.ndarray
+        Shape ``(n_runs, n_terms)``.
+
+    Returns
+    -------
+    np.ndarray
+        Symmetric matrix of shape ``(n_terms, n_terms)`` with values in [0, 1].
+
+    Notes
+    -----
+    Zero-variance columns yield ``NaN`` correlations, which are replaced with
+    ``0.0`` to keep the heatmap renderable.
+    """
+    with np.errstate(invalid="ignore", divide="ignore"):
+        corr = np.corrcoef(matrix.T)
+    corr = np.abs(corr)
+    corr = np.nan_to_num(corr, nan=0.0)
+    return corr
+
+
+def _build_heatmap(corr: np.ndarray, labels: List[str]) -> go.Figure:
+    """
+    Build a Plotly heatmap from an absolute correlation matrix.
+
+    The diagonal is masked (shown as white / 0) so self-correlations do not
+    distort the colour scale.
+
+    Parameters
+    ----------
+    corr : np.ndarray
+        Absolute correlation matrix, shape ``(n, n)``.
+    labels : List[str]
+        Axis tick labels, length ``n``.
+
+    Returns
+    -------
+    go.Figure
+        Configured Plotly figure.
+    """
+    display = corr.copy()
+    np.fill_diagonal(display, np.nan)  # hide diagonal
+
+    n = len(labels)
+    cell_size = max(40, min(80, 600 // max(n, 1)))
+    fig_size = n * cell_size + 120
+
+    fig = go.Figure(
+        go.Heatmap(
+            z=display,
+            x=labels,
+            y=labels,
+            colorscale=[
+                [0.0, "#2166ac"],   # deep blue  -> low correlation
+                [0.5, "#f7f7f7"],   # white      -> moderate
+                [1.0, "#b2182b"],   # deep red   -> high correlation
+            ],
+            zmin=0,
+            zmax=1,
+            colorbar=dict(title="|r|", thickness=14, len=0.8),
+            text=np.where(
+                np.isnan(display),
+                "",
+                np.vectorize(lambda v: f"{v:.2f}")(display),
+            ),
+            texttemplate="%{text}",
+            hovertemplate="<b>%{x}</b> × <b>%{y}</b><br>|r| = %{z:.3f}<extra></extra>",
+        )
     )
 
-    # Try to translate algebraic symbols to real names
-    try:
-        mapper = FactorMapper(factors)
-        use_real = True
-    except Exception:
-        use_real = False
+    fig.update_layout(
+        height=fig_size,
+        width=fig_size,
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="#0e1117",
+        plot_bgcolor="#0e1117",
+        font=dict(color="#fafafa", size=11),
+        xaxis=dict(tickangle=-45, tickfont=dict(size=10)),
+        yaxis=dict(tickfont=dict(size=10)),
+    )
 
-    def _fmt(term: str) -> str:
-        if not use_real:
-            return term
-        try:
-            return _translate_algebraic_term(term, mapper)
-        except Exception:
-            return term
+    return fig
 
-    # Separate critical (ME aliased with 2FI) from others
-    critical_rows = []
-    other_rows = []
 
+def _find_flagged_pairs(
+    corr: np.ndarray,
+    labels: List[str],
+) -> List[tuple]:
+    """
+    Collect off-diagonal term pairs where |r| >= threshold.
+
+    Parameters
+    ----------
+    corr : np.ndarray
+        Absolute correlation matrix.
+    labels : List[str]
+        Term labels.
+
+    Returns
+    -------
+    List[tuple[str, str, float]]
+        List of ``(label_a, label_b, abs_r)`` for upper-triangle pairs only.
+    """
+    flagged = []
+    n = len(labels)
+    for i in range(n):
+        for j in range(i + 1, n):
+            val = float(corr[i, j])
+            if val >= _ALIAS_FLAG_THRESHOLD:
+                flagged.append((labels[i], labels[j], round(val, 3)))
+    return flagged
+
+
+def _render_alias_chains(
+    alias_structure: Dict[str, List[str]],
+    factors: List[Factor],
+) -> None:
+    """
+    Display exact alias chains for fractional factorial designs.
+
+    Algebraic symbols are translated to real factor names where possible.
+    Only main-effect aliases (i.e. effects aliased with other main effects or
+    two-factor interactions) are shown to keep the output concise.
+
+    Parameters
+    ----------
+    alias_structure : Dict[str, List[str]]
+        Mapping from effect string to list of aliased effect strings.
+        Keys and values use single-letter algebraic notation (A, B, AB, ...).
+    factors : List[Factor]
+        Factor definitions used to translate symbols to real names.
+
+    Returns
+    -------
+    None
+    """
+    st.markdown("**Exact Alias Chains** (from defining relation)")
+
+    if not alias_structure:
+        st.info("No alias chains available.")
+        return
+
+    # Build symbol -> name map
+    sym_map: Dict[str, str] = {
+        chr(65 + i): f.name for i, f in enumerate(factors)
+    }
+
+    def _translate(effect: str) -> str:
+        """Translate algebraic effect string to factor names."""
+        parts = [sym_map.get(ch, ch) for ch in effect]
+        return "*".join(parts)
+
+    rows = []
     for effect, aliases in sorted(
         alias_structure.items(), key=lambda x: (len(x[0]), x[0])
     ):
+        # Only show up to 3rd-order interactions to avoid clutter
+        if len(effect) > 3:
+            continue
         if not aliases:
             continue
-        effect_display = _fmt(effect)
-        aliases_display = " = ".join(_fmt(a) for a in aliases)
-        row_str = f"**{effect_display}** = {aliases_display}"
+        rows.append(
+            {
+                "Effect": _translate(effect),
+                "Aliased With": " + ".join(_translate(a) for a in aliases),
+            }
+        )
 
-        is_critical = len(effect) == 1 and any(len(a) == 2 for a in aliases)
-        if is_critical:
-            critical_rows.append(row_str)
-        else:
-            other_rows.append(row_str)
+    if rows:
+        alias_df = pd.DataFrame(rows)
+        st.dataframe(alias_df, hide_index=True, use_container_width=True)
+    else:
+        st.info("No alias chains up to 3rd order.")
 
-    if critical_rows:
-        st.error("**Critical: Main effects aliased with 2-factor interactions**")
-        for row in critical_rows:
-            st.markdown(f"- {row}")
 
-    if other_rows:
-        with st.expander("Other alias chains", expanded=False):
-            for row in other_rows:
-                st.markdown(f"- {row}")
+def _format_term_label(term: str) -> str:
+    """
+    Convert a patsy-notation term to a compact display label.
 
-    if not critical_rows and not other_rows:
-        st.success("\u2705 No aliasing detected at this resolution.")
+    Parameters
+    ----------
+    term : str
+        Patsy term, e.g. ``'Temperature*Pressure'`` or ``'I(A**2)'``.
+
+    Returns
+    -------
+    str
+        Short label, e.g. ``'Temp×Press'`` or ``'A²'``.
+
+    Notes
+    -----
+    Long factor names are truncated to 8 characters to keep the heatmap
+    axis labels readable.
+    """
+    if term.startswith("I(") and "**2" in term:
+        name = term[2:].replace("**2)", "").strip()
+        return f"{_truncate(name)}²"
+
+    if "*" in term:
+        parts = [_truncate(p.strip()) for p in term.split("*")]
+        return "×".join(parts)
+
+    return _truncate(term)
+
+
+def _truncate(name: str, max_len: int = 8) -> str:
+    """Truncate a factor name to *max_len* characters."""
+    return name if len(name) <= max_len else name[:max_len - 1] + "…"

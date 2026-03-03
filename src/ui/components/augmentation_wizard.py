@@ -358,6 +358,7 @@ def display_plan_execution(plan: AugmentationPlan) -> None:
             
             # Success - store in session state
             st.session_state['augmented_design'] = augmented
+            st.session_state['augmentation_results_displayed'] = True
             st.success(f"✅ Successfully added {augmented.n_runs_added} runs")
             
             # Display results

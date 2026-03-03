@@ -231,6 +231,8 @@ def invalidate_downstream_state(from_step: int) -> None:
         st.session_state['augmentation_plans'] = []
         st.session_state['selected_plan'] = None
         st.session_state['augmented_design'] = None
+        st.session_state['augmentation_results_displayed'] = False
+        st.session_state['selected_augmentation_plan'] = None
         st.session_state['optimization_results'] = None
     
     elif from_step <= 2:
@@ -246,6 +248,8 @@ def invalidate_downstream_state(from_step: int) -> None:
         st.session_state['augmentation_plans'] = []
         st.session_state['selected_plan'] = None
         st.session_state['augmented_design'] = None
+        st.session_state['augmentation_results_displayed'] = False
+        st.session_state['selected_augmentation_plan'] = None
         st.session_state['optimization_results'] = None
     
     elif from_step <= 3:
@@ -259,6 +263,8 @@ def invalidate_downstream_state(from_step: int) -> None:
         st.session_state['augmentation_plans'] = []
         st.session_state['selected_plan'] = None
         st.session_state['augmented_design'] = None
+        st.session_state['augmentation_results_displayed'] = False
+        st.session_state['selected_augmentation_plan'] = None
         st.session_state['optimization_results'] = None
     
     elif from_step <= 4:
@@ -270,6 +276,8 @@ def invalidate_downstream_state(from_step: int) -> None:
         st.session_state['augmentation_plans'] = []
         st.session_state['selected_plan'] = None
         st.session_state['augmented_design'] = None
+        st.session_state['augmentation_results_displayed'] = False
+        st.session_state['selected_augmentation_plan'] = None
         st.session_state['optimization_results'] = None
     
     elif from_step <= 5:
@@ -279,6 +287,8 @@ def invalidate_downstream_state(from_step: int) -> None:
         st.session_state['augmentation_plans'] = []
         st.session_state['selected_plan'] = None
         st.session_state['augmented_design'] = None
+        st.session_state['augmentation_results_displayed'] = False
+        st.session_state['selected_augmentation_plan'] = None
         st.session_state['optimization_results'] = None
     
     elif from_step <= 6:
@@ -327,6 +337,8 @@ def reset_augmentation() -> None:
     st.session_state['augmentation_plans'] = []
     st.session_state['selected_plan'] = None
     st.session_state['augmented_design'] = None
+    st.session_state['augmentation_results_displayed'] = False
+    st.session_state['selected_augmentation_plan'] = None
     st.session_state['optimization_results'] = None
 
 

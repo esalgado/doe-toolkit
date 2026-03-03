@@ -84,12 +84,17 @@ def augment_full_foldover(
     if missing:
         raise ValueError(f"Design missing factor columns: {missing}")
     
-    # Foldover operates in coded space (-1/+1): encode, negate, decode back.
+    # Foldover operates in coded space (-1/+1): encode, negate, then return
+    # in the same coordinate convention as the original design.
+    from src.core.coding import is_design_coded
     factor_cols = original_design[factor_names]
     coded = encode_design(factor_cols, factors)
     coded_folded = coded.copy()
     coded_folded[factor_names] = -coded_folded[factor_names]
-    foldover_factor_cols = decode_design(coded_folded, factors)
+    if is_design_coded(factor_cols, factors):
+        foldover_factor_cols = coded_folded  # stay coded to match original
+    else:
+        foldover_factor_cols = decode_design(coded_folded, factors)
 
     # Restore any non-factor columns from original (e.g. WholePlot) minus
     # bookkeeping columns that will be rebuilt below.
@@ -275,12 +280,17 @@ def augment_single_factor_foldover(
     if missing:
         raise ValueError(f"Design missing factor columns: {missing}")
     
-    # Foldover operates in coded space: encode the folded factor, negate, decode.
+    # Foldover operates in coded space: encode, negate the folded factor, then
+    # return in the same coordinate convention as the original design.
+    from src.core.coding import is_design_coded
     factor_cols = original_design[factor_names]
     coded = encode_design(factor_cols, factors)
     coded_folded = coded.copy()
     coded_folded[factor_to_fold] = -coded_folded[factor_to_fold]
-    foldover_factor_cols = decode_design(coded_folded, factors)
+    if is_design_coded(factor_cols, factors):
+        foldover_factor_cols = coded_folded  # stay coded to match original
+    else:
+        foldover_factor_cols = decode_design(coded_folded, factors)
 
     # Carry forward non-factor, non-bookkeeping columns (e.g. WholePlot).
     _skip = {'StdOrder', 'RunOrder', 'Phase'}

@@ -7,6 +7,85 @@ that should appear across all pages.
 
 import streamlit as st
 from datetime import datetime
+from typing import Optional
+
+import requests
+
+from src.__version__ import __version__
+
+_GITHUB_RELEASES_URL = (
+    "https://api.github.com/repos/bpimentel3/doe-toolkit/releases/latest"
+)
+
+
+def _fetch_latest_version() -> Optional[str]:
+    """
+    Fetch the latest release tag from GitHub.
+
+    Returns
+    -------
+    Optional[str]
+        The latest version string (e.g. '0.2.0'), or None if unreachable.
+
+    Notes
+    -----
+    Fails silently — a network error or timeout will return None so the
+    app continues to load normally.
+    """
+    try:
+        response = requests.get(_GITHUB_RELEASES_URL, timeout=3)
+        response.raise_for_status()
+        tag = response.json().get("tag_name", "")
+        return tag.lstrip("v") if tag else None
+    except Exception:
+        return None
+
+
+def _is_newer(remote: str, local: str) -> bool:
+    """
+    Compare two semantic version strings.
+
+    Parameters
+    ----------
+    remote : str
+        Version string from GitHub (e.g. '0.2.0').
+    local : str
+        Current installed version string (e.g. '0.1.0').
+
+    Returns
+    -------
+    bool
+        True if remote is strictly newer than local.
+    """
+    try:
+        remote_parts = tuple(int(x) for x in remote.split("."))
+        local_parts = tuple(int(x) for x in local.split("."))
+        return remote_parts > local_parts
+    except ValueError:
+        return False
+
+
+def add_version_footer() -> None:
+    """
+    Add version display and update notification to the sidebar footer.
+
+    Displays the current version and, if a newer GitHub release exists,
+    shows a banner with a link to the releases page.
+
+    Returns
+    -------
+    None
+    """
+    st.sidebar.markdown("---")
+
+    latest = _fetch_latest_version()
+    if latest and _is_newer(latest, __version__):
+        st.sidebar.warning(
+            f"🆕 **v{latest} available!** "
+            f"[Download on GitHub](https://github.com/bpimentel3/doe-toolkit/releases)"
+        )
+
+    st.sidebar.caption(f"DOE Toolkit v{__version__}")
 
 
 def add_export_section():
@@ -189,3 +268,6 @@ def build_standard_sidebar():
     
     # Export buttons at bottom
     add_export_section()
+
+    # Version display and update check at very bottom
+    add_version_footer()

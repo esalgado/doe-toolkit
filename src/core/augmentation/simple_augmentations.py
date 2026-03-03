@@ -76,12 +76,16 @@ def augment_with_center_points(
             f"{categorical}"
         )
 
-    # Build center-point rows using actual midpoint values (not coded 0).
+    # Determine if the original design is stored in coded or actual space,
+    # then build center-point rows in the matching convention.
+    from src.core.coding import is_design_coded as _is_coded
+    factor_names_local = [f.name for f in factors]
+    design_is_coded = _is_coded(original_design[factor_names_local], factors)
+
     center_row: Dict[str, object] = {}
     for f in factors:
         if f.factor_type == FactorType.CONTINUOUS:
-            min_val, max_val = float(f.levels[0]), float(f.levels[1])
-            center_row[f.name] = (min_val + max_val) / 2.0
+            center_row[f.name] = 0.0 if design_is_coded else (float(f.levels[0]) + float(f.levels[1])) / 2.0
         elif f.factor_type == FactorType.DISCRETE_NUMERIC:
             levels_sorted = sorted(float(v) for v in f.levels)
             mid_idx = len(levels_sorted) // 2

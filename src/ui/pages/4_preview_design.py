@@ -636,13 +636,19 @@ else:
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
+        # Include design-level model terms from Step 2 so that re-importing
+        # the CSV pre-populates the analysis with the intended model.
+        _design_terms: list = st.session_state.get('model_terms') or []
+        _export_model_terms = {'__design__': _design_terms} if _design_terms else None
+
         # Generate CSV with metadata
         csv_content = generate_doe_csv(
             design=design,
             factors=factors,
             response_definitions=st.session_state.get('response_definitions'),
             design_type=design_type,
-            design_metadata=metadata
+            design_metadata=metadata,
+            model_terms=_export_model_terms,
         )
         
         st.download_button(
