@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 
 from src.core.factors import Factor
+from src.core.coding import DesignSpace
 from src.core.augmentation.plan import AugmentationPlan, AugmentedDesign
 from src.core.diagnostics import DesignDiagnosticSummary, DesignQualityReport
 
@@ -31,7 +32,16 @@ def initialize_session_state() -> None:
     
     if 'design' not in st.session_state:
         st.session_state['design'] = None
-    
+
+    # Typed design representations — canonical form going forward.
+    # 'design' remains as the display alias (always natural units).
+    # 'design_space' carries the coding specs for all factors.
+    if 'design_natural' not in st.session_state:
+        st.session_state['design_natural'] = None
+
+    if 'design_space' not in st.session_state:
+        st.session_state['design_space'] = None
+
     if 'design_metadata' not in st.session_state:
         st.session_state['design_metadata'] = {}
     
@@ -221,6 +231,8 @@ def invalidate_downstream_state(from_step: int) -> None:
         # Factors changed - clear everything
         st.session_state['design_type'] = None
         st.session_state['design'] = None
+        st.session_state['design_natural'] = None
+        st.session_state['design_space'] = None
         st.session_state['design_metadata'] = {}
         st.session_state['responses'] = {}
         st.session_state['response_names'] = []
@@ -238,6 +250,8 @@ def invalidate_downstream_state(from_step: int) -> None:
     elif from_step <= 2:
         # Design type changed - clear design and downstream
         st.session_state['design'] = None
+        st.session_state['design_natural'] = None
+        st.session_state['design_space'] = None
         st.session_state['design_metadata'] = {}
         st.session_state['responses'] = {}
         st.session_state['response_names'] = []
@@ -298,17 +312,44 @@ def invalidate_downstream_state(from_step: int) -> None:
 
 def get_active_design() -> Optional[pd.DataFrame]:
     """
-    Get the currently active design (augmented if available, else original).
-    
+    Get the currently active design in natural units (augmented if available).
+
+    This is the canonical display form.  Always in natural (engineering)
+    units; never exposes coded values to the UI.
+
     Returns
     -------
     pd.DataFrame or None
-        Active design matrix
+        Active design matrix in natural units.
     """
     if st.session_state.get('augmented_design') is not None:
         return st.session_state['augmented_design'].combined_design
-    
+
     return st.session_state.get('design')
+
+
+def get_active_design_coded() -> Optional[pd.DataFrame]:
+    """
+    Get the currently active design encoded to coded [-1, +1] space.
+
+    Intended for use by analysis, diagnostics, and optimality calculations
+    that require a coded model matrix.  Converts on-the-fly from the
+    natural-unit design stored in session state using the ``DesignSpace``
+    stored alongside it.
+
+    Returns
+    -------
+    pd.DataFrame or None
+        Active design matrix with continuous factor columns in coded space,
+        or ``None`` if no design is loaded or ``design_space`` is missing.
+    """
+    design_space: Optional[DesignSpace] = st.session_state.get('design_space')
+    natural_df = get_active_design()
+
+    if natural_df is None or design_space is None:
+        return None
+
+    return design_space.encode_dataframe(natural_df)
 
 
 def get_active_responses() -> Dict[str, np.ndarray]:

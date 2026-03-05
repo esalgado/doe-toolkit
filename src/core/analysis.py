@@ -21,6 +21,7 @@ import statsmodels.api as sm
 from statsmodels.formula.api import ols, mixedlm
 
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
+from src.core.coding import DesignSpace
 from src.core.analysis_base import (
     ANOVAResults,
     enforce_hierarchy,
@@ -157,7 +158,7 @@ def validate_model_terms(terms: List[str], factors: List[Factor], design: pd.Dat
 
 class ANOVAAnalysis:
     """ANOVA analysis for experimental designs."""
-    
+
     def __init__(
         self,
         design: pd.DataFrame,
@@ -167,21 +168,29 @@ class ANOVAAnalysis:
         is_split_plot: Optional[bool] = None,
         block_as_random: bool = False
     ):
-        self.design = design
-        self.response = np.array(response)
         self.factors = factors
+        self.response = np.array(response)
         self.response_name = response_name
         self.block_as_random = block_as_random
-        
+
+        # Build the design space and always encode to coded [-1, +1] space
+        # before analysis.  The incoming ``design`` may be in natural units
+        # (the canonical session-state format since Phase 2) or already coded
+        # (legacy callers).  Using DesignSpace guarantees the model is always
+        # fit on a coded matrix, making coefficients directly comparable and
+        # compute_actual_coefficients() unconditionally correct.
+        self._design_space = DesignSpace.from_factors(factors)
+        self.design = self._design_space.encode_dataframe(design)
+
         self.data = prepare_analysis_data(
-            design, response, factors, response_name
+            self.design, response, factors, response_name
         )
         self.rename_map = {}
-        self.design_structure = detect_split_plot_structure(design, factors)
-        
+        self.design_structure = detect_split_plot_structure(self.design, factors)
+
         if is_split_plot is not None:
             self.design_structure['is_split_plot'] = is_split_plot
-        
+
         self.current_model = None
         self.current_results = None
     

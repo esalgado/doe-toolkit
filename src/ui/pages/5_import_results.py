@@ -19,6 +19,7 @@ from src.ui.utils.state_management import (
     initialize_session_state,
     invalidate_downstream_state
 )
+from src.core.coding import DesignSpace
 from src.core.factors import Factor, FactorType
 from src.ui.utils.csv_parser import (
     parse_doe_csv,
@@ -207,6 +208,8 @@ if uploaded_file:
                 # Load into session
                 st.session_state['factors'] = parse_result.factors
                 st.session_state['design'] = parse_result.design_data
+                st.session_state['design_natural'] = parse_result.design_data
+                st.session_state['design_space'] = DesignSpace.from_factors(parse_result.factors)
                 st.session_state['response_definitions'] = parse_result.response_definitions
                 st.session_state['design_metadata'] = parse_result.metadata
 
@@ -257,6 +260,13 @@ if uploaded_file:
                     st.caption(f"CSV: {', '.join(sorted(csv_responses))}")
                 
                 if st.button("📥 Import Results (Keep Session Factors)", type="primary", width='stretch'):
+                    # Update design state to match CSV (natural units).
+                    # Factors are kept from the session; design_space is rebuilt
+                    # in case factors were modified since the original design was made.
+                    st.session_state['design'] = parse_result.design_data
+                    st.session_state['design_natural'] = parse_result.design_data
+                    st.session_state['design_space'] = DesignSpace.from_factors(st.session_state['factors'])
+
                     # Extract responses
                     responses = extract_responses_from_design(
                         parse_result.design_data,
@@ -317,6 +327,8 @@ if uploaded_file:
                     if st.button("🔄 Replace Session with CSV Factors", width='stretch'):
                         st.session_state['factors'] = parse_result.factors
                         st.session_state['design'] = parse_result.design_data
+                        st.session_state['design_natural'] = parse_result.design_data
+                        st.session_state['design_space'] = DesignSpace.from_factors(parse_result.factors)
                         st.session_state['response_definitions'] = parse_result.response_definitions
                         
                         # Extract responses

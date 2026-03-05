@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from src.core.factors import Factor
+from src.core.coding import DesignSpace
 from src.core.diagnostics import (
     ResponseDiagnostics,
     DesignDiagnosticSummary,
@@ -93,34 +94,42 @@ def compute_response_diagnostics(
     diag = ResponseDiagnostics(response_name=response_name)
     diag.model_terms = list(model_terms)
 
+    # Encode design to coded space for all matrix-based computations.
+    # The incoming ``design`` is in natural units (canonical session-state
+    # format after Phase 2).  Diagnostics that build model matrices require
+    # continuous factors in coded [-1, +1] space.
+    design_space = DesignSpace.from_factors(factors)
+    design_coded = design_space.encode_dataframe(design)
+
     # Extract model fit statistics
     if hasattr(fitted_model, 'rsquared'):
         diag.r_squared = float(fitted_model.rsquared)
         diag.adj_r_squared = float(fitted_model.rsquared_adj)
-    
+
     # RMSE from residuals
     residuals = fitted_model.resid
     diag.rmse = float(np.sqrt(np.mean(residuals ** 2)))
-    
-    # Lack of fit (if pure error available — requires replicates or center points)
+
+    # Lack of fit — replicate detection uses natural values for grouping
+    # (rounded to suppress floating-point noise), so pass natural design.
     diag.lack_of_fit_p_value = _compute_lof_p_value(design, residuals, factors, model_terms)
-    
+
     # Aliasing diagnostics (for fractional designs)
     if design_metadata['design_type'] == 'fractional':
         _add_aliasing_diagnostics(diag, design_metadata, factors)
-    
-    # Prediction variance
+
+    # Prediction variance — requires coded design
     sigma_squared = diag.rmse ** 2
     diag.prediction_variance_stats = prediction_variance_stats(
-        design, factors, model_terms, sigma_squared
+        design_coded, factors, model_terms, sigma_squared
     )
 
-    # VIF and collinearity
-    diag.vif_values = compute_vif(design, factors, model_terms)
+    # VIF and collinearity — requires coded design
+    diag.vif_values = compute_vif(design_coded, factors, model_terms)
 
-    # High leverage points
+    # High leverage points — requires coded design
     diag.high_leverage_points = identify_high_leverage_points(
-        design, factors, model_terms
+        design_coded, factors, model_terms
     )
     
     # Effect significance (from fitted model)

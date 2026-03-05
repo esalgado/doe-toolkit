@@ -76,16 +76,12 @@ def augment_with_center_points(
             f"{categorical}"
         )
 
-    # Determine if the original design is stored in coded or actual space,
-    # then build center-point rows in the matching convention.
-    from src.core.coding import is_design_coded as _is_coded
-    factor_names_local = [f.name for f in factors]
-    design_is_coded = _is_coded(original_design[factor_names_local], factors)
-
+    # original_design is always in natural units (invariant since Phase 2).
+    # Build center-point rows at the natural midpoint of each factor range.
     center_row: Dict[str, object] = {}
     for f in factors:
         if f.factor_type == FactorType.CONTINUOUS:
-            center_row[f.name] = 0.0 if design_is_coded else (float(f.levels[0]) + float(f.levels[1])) / 2.0
+            center_row[f.name] = (float(f.levels[0]) + float(f.levels[1])) / 2.0
         elif f.factor_type == FactorType.DISCRETE_NUMERIC:
             levels_sorted = sorted(float(v) for v in f.levels)
             mid_idx = len(levels_sorted) // 2
@@ -121,12 +117,15 @@ def augment_with_center_points(
     combined.insert(0, "StdOrder", range(1, len(combined) + 1))
     combined.insert(1, "RunOrder", range(1, len(combined) + 1))
 
-    # Condition number of model matrix (intercept + main effects)
+    # Condition number of model matrix (intercept + main effects).
+    # build_model_matrix expects continuous factors in coded [-1, +1] space.
     try:
         from src.core.diagnostics.variance import build_model_matrix
+        from src.core.coding import DesignSpace
 
+        _ds = DesignSpace.from_factors(factors)
         main_terms = ["1"] + factor_names
-        X, _ = build_model_matrix(combined[factor_names], factors, main_terms)
+        X, _ = build_model_matrix(_ds.encode_dataframe(combined[factor_names]), factors, main_terms)
         condition_number = float(np.linalg.cond(X.T @ X))
     except Exception:
         condition_number = np.inf
@@ -256,11 +255,14 @@ def augment_with_replicates(
     combined.insert(0, "StdOrder", range(1, len(combined) + 1))
     combined.insert(1, "RunOrder", range(1, len(combined) + 1))
 
+    # build_model_matrix expects continuous factors in coded [-1, +1] space.
     try:
         from src.core.diagnostics.variance import build_model_matrix
+        from src.core.coding import DesignSpace
 
+        _ds = DesignSpace.from_factors(factors)
         main_terms = ["1"] + factor_names
-        X, _ = build_model_matrix(combined[factor_names], factors, main_terms)
+        X, _ = build_model_matrix(_ds.encode_dataframe(combined[factor_names]), factors, main_terms)
         condition_number = float(np.linalg.cond(X.T @ X))
     except Exception:
         condition_number = np.inf

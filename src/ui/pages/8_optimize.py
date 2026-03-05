@@ -23,7 +23,7 @@ from src.ui.utils.state_management import (
     get_active_design,
     is_using_augmented_design
 )
-from src.core.coding import is_design_coded
+from src.core.coding import DesignSpace
 from src.ui.utils.plotting import (
     create_3d_surface_plot,
     create_contour_plot
@@ -48,10 +48,10 @@ design = get_active_design()
 factors = st.session_state['factors']
 fitted_models = st.session_state.get('fitted_models', {})
 
-# Detect coordinate space once. Models were fit on whatever space the stored
-# design uses, so the optimizers must encode actual-space inputs before
-# calling model.predict() only when this is True.
-_model_is_coded = is_design_coded(design, factors)
+# Models are always fit in coded space (ANOVAAnalysis encodes on construction).
+# Build the design space so optimizers can encode/decode factor settings.
+_design_space = DesignSpace.from_factors(factors)
+_model_is_coded = True  # invariant: ANOVAAnalysis always fits in coded space
 
 if not fitted_models:
     st.error("No fitted models available. Please complete analysis in Step 5.")

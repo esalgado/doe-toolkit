@@ -22,6 +22,7 @@ from src.ui.utils.state_management import (
     can_access_step,
     invalidate_downstream_state
 )
+from src.core.coding import DesignSpace
 from src.core.factors import Factor
 from src.ui.utils.csv_parser import generate_doe_csv
 from src.ui.components.constraint_builder import (
@@ -453,8 +454,12 @@ if st.session_state.get('design') is None:
                     else:  # Otherwise metadata was set directly to session_state already
                         st.session_state['design_metadata'] = current_metadata
                 
-                # Save design to session state (if not already done)
+                # Save design to session state.
+                # 'design' is always in natural units (display alias).
+                # 'design_space' carries the coding specs for analysis.
                 st.session_state['design'] = design
+                st.session_state['design_natural'] = design
+                st.session_state['design_space'] = DesignSpace.from_factors(factors)
                 
                 # Ensure metadata has design_type
                 if 'design_metadata' in st.session_state:
@@ -518,36 +523,35 @@ else:
             # Generate model builder
             model_builder = create_polynomial_builder(factors, model_type)
             
-            # Get design in coded space
+            # Encode design to coded space via DesignSpace
+            import numpy as np
             factor_names = [f.name for f in factors]
             if all(col in design.columns for col in factor_names):
-                from src.core.optimal.utils import code_point
-                import numpy as np
-                
-                # Code the design points
-                design_coded = np.array([
-                    code_point(design[factor_names].iloc[i].values, factors)
-                    for i in range(len(design))
-                ])
-                
+                _ds_preview = DesignSpace.from_factors(factors)
+                design_coded = _ds_preview.encode_dataframe(
+                    design[factor_names]
+                ).values
+
                 # Build model matrix
                 X = model_builder(design_coded)
                 XtX = X.T @ X
-                
+
                 # Get benchmark
                 det_benchmark, _ = compute_benchmark_criterion(
                     factors, model_type, model_builder, criterion_type='D'
                 )
-                
+
                 # Compute determinant and efficiency
                 det_design = np.linalg.det(XtX)
-                model_terms = generate_model_terms(factors, model_type, include_intercept=True)
+                model_terms = generate_model_terms(
+                    factors, model_type, include_intercept=True
+                )
                 n_params = len(model_terms)
-                
+
                 d_efficiency = compute_d_efficiency_vs_benchmark(
                     det_design, len(design), n_params, det_benchmark
                 )
-                
+
                 st.metric("D-Efficiency", f"{d_efficiency:.1f}%")
             else:
                 st.metric("D-Efficiency", "—")

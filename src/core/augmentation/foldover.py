@@ -84,17 +84,13 @@ def augment_full_foldover(
     if missing:
         raise ValueError(f"Design missing factor columns: {missing}")
     
-    # Foldover operates in coded space (-1/+1): encode, negate, then return
-    # in the same coordinate convention as the original design.
-    from src.core.coding import is_design_coded
+    # Foldover operates in coded space: encode natural design, negate, decode back.
+    # original_design is always in natural units (invariant since Phase 2).
     factor_cols = original_design[factor_names]
     coded = encode_design(factor_cols, factors)
     coded_folded = coded.copy()
     coded_folded[factor_names] = -coded_folded[factor_names]
-    if is_design_coded(factor_cols, factors):
-        foldover_factor_cols = coded_folded  # stay coded to match original
-    else:
-        foldover_factor_cols = decode_design(coded_folded, factors)
+    foldover_factor_cols = decode_design(coded_folded, factors)
 
     # Restore any non-factor columns from original (e.g. WholePlot) minus
     # bookkeeping columns that will be rebuilt below.
@@ -125,7 +121,7 @@ def augment_full_foldover(
             combined = combined.drop(columns=[col])
     combined.insert(0, 'StdOrder', range(1, len(combined) + 1))
     combined.insert(1, 'RunOrder', range(1, len(combined) + 1))
-    
+
     # Compute new resolution using aliasing engine
     from src.core.aliasing import AliasingEngine
     
@@ -280,17 +276,14 @@ def augment_single_factor_foldover(
     if missing:
         raise ValueError(f"Design missing factor columns: {missing}")
     
-    # Foldover operates in coded space: encode, negate the folded factor, then
-    # return in the same coordinate convention as the original design.
-    from src.core.coding import is_design_coded
+    # Foldover operates in coded space: encode natural design, negate the folded
+    # factor, then decode back to natural units.
+    # original_design is always in natural units (invariant since Phase 2).
     factor_cols = original_design[factor_names]
     coded = encode_design(factor_cols, factors)
     coded_folded = coded.copy()
     coded_folded[factor_to_fold] = -coded_folded[factor_to_fold]
-    if is_design_coded(factor_cols, factors):
-        foldover_factor_cols = coded_folded  # stay coded to match original
-    else:
-        foldover_factor_cols = decode_design(coded_folded, factors)
+    foldover_factor_cols = decode_design(coded_folded, factors)
 
     # Carry forward non-factor, non-bookkeeping columns (e.g. WholePlot).
     _skip = {'StdOrder', 'RunOrder', 'Phase'}
