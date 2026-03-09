@@ -356,12 +356,12 @@ Reverse signs of one factor to de-alias specific interactions.
 
 ## References
 
+> **Note:** Citations below are based on standard attribution in the DOE literature. They have not been verified against source texts. Journal volume and page numbers should be treated as approximate.
+
 1. Box, G. E. P., Hunter, J. S., and Hunter, W. G. (2005). *Statistics for Experimenters*, 2nd Ed. Wiley.
 
 2. Montgomery, D. C. (2017). *Design and Analysis of Experiments*, 9th Ed. Wiley.
 
 3. Wu, C. F. J., and Hamada, M. S. (2009). *Experiments: Planning, Analysis, and Optimization*, 2nd Ed. Wiley.
 
-4. Box, G. E. P., and Wilson, K. B. (1951). On the Experimental Attainment of Optimum Conditions. *Journal of the Royal Statistical Society, Series B*, 13, 1-45.
-
-5. National Institute of Standards and Technology (NIST). Engineering Statistics Handbook, Section 5.3.3: Fractional Factorial Designs.
+4. National Institute of Standards and Technology (NIST). Engineering Statistics Handbook, Section 5.3.3: Fractional Factorial Designs.

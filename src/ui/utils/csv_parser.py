@@ -358,7 +358,7 @@ def extract_response_definitions(lines: List[str]) -> List[Dict[str, Optional[st
             in_section = True
             continue
 
-        if in_section and line.startswith("# DESIGN DATA"):
+        if in_section and (line.startswith("# DESIGN DATA") or line.startswith("# MODEL TERMS")):
             break
 
         if not in_section:
@@ -637,7 +637,13 @@ def generate_doe_csv(
     for factor in factors:
         factor_type_str = factor.factor_type.value
         changeability_str = factor.changeability.value
-        units_str = factor.units if factor.units else ""
+        # Normalize units: strip list notation if stored as "['unit']" due to
+        # st.data_editor returning list values for some column types.
+        raw_units = factor.units if factor.units else ""
+        if isinstance(raw_units, list):
+            raw_units = raw_units[0] if raw_units else ""
+        units_str = str(raw_units).strip().lstrip("['").rstrip("']")
+        units_str = units_str if units_str and units_str.lower() not in ['nan', 'none'] else ""
 
         # Format levels based on type
         if factor.is_continuous():
@@ -673,12 +679,13 @@ def generate_doe_csv(
     lines.append("#")
     lines.append("# DESIGN DATA")
 
-    # Add response columns (empty) to design
+    # Add response columns to design; preserve pre-filled values if already present
     design_with_responses = design.copy()
 
     if response_definitions:
         for response in response_definitions:
-            design_with_responses[response["name"]] = ""
+            if response["name"] not in design_with_responses.columns:
+                design_with_responses[response["name"]] = ""
 
     csv_data = design_with_responses.to_csv(index=False)
     lines.append(csv_data.rstrip())

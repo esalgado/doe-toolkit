@@ -512,6 +512,8 @@ Subject to: x_min ≤ xᵢ ≤ x_max
 
 ## References
 
+> **Note:** Citations below are based on standard attribution in the DOE literature. They have not been verified against source texts. Journal volume and page numbers should be treated as approximate.
+
 1. Box, G. E. P., and Wilson, K. B. (1951). On the Experimental Attainment of Optimum Conditions. *Journal of the Royal Statistical Society, Series B*, 13, 1-45.
 
 2. Box, G. E. P., and Behnken, D. W. (1960). Some New Three Level Designs for the Study of Quantitative Variables. *Technometrics*, 2, 455-475.

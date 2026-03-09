@@ -270,11 +270,7 @@ def create_parity_plot(
     return apply_plot_style(fig)
 
 
-def create_residual_plot(
-    fitted: np.ndarray,
-    residuals: np.ndarray,
-    response_units: Optional[str] = None,
-) -> go.Figure:
+def create_residual_plot(fitted: np.ndarray, residuals: np.ndarray) -> go.Figure:
     """
     Create studentized residuals vs fitted with color-coded thresholds.
 
@@ -284,8 +280,6 @@ def create_residual_plot(
         Fitted values from model
     residuals : np.ndarray
         Raw residuals (actual - predicted)
-    response_units : Optional[str]
-        Units for the fitted values axis (e.g., "kg"). If None, no units shown.
 
     Returns
     -------
@@ -381,9 +375,8 @@ def create_residual_plot(
         )
     )
 
-    fitted_label = _label_with_units("Fitted Values", response_units)
     fig.update_layout(
-        xaxis_title=fitted_label,
+        xaxis_title="Fitted Values",
         yaxis_title="Studentized Residuals",
         height=400,
         showlegend=False,
@@ -656,10 +649,7 @@ def create_qq_plot(residuals: np.ndarray) -> go.Figure:
     return apply_plot_style(fig)
 
 
-def create_residual_vs_run_order_plot(
-    residuals: np.ndarray,
-    response_units: Optional[str] = None,
-) -> go.Figure:
+def create_residual_vs_run_order_plot(residuals: np.ndarray) -> go.Figure:
     """
     Create residuals vs run order plot.
 
@@ -667,8 +657,6 @@ def create_residual_vs_run_order_plot(
     ----------
     residuals : np.ndarray
         Model residuals
-    response_units : Optional[str]
-        Units for the residuals axis (e.g., "kg"). If None, no units shown.
 
     Returns
     -------
@@ -710,20 +698,15 @@ def create_residual_vs_run_order_plot(
     fig.add_hline(
         y=0, line=dict(color=PLOT_COLORS["danger"], dash="dash", width=2)
     )
-    residuals_label = _label_with_units("Residuals", response_units)
     fig.update_layout(
-        xaxis_title="Run Order", yaxis_title=residuals_label, height=350
+        xaxis_title="Run Order", yaxis_title="Residuals", height=350
     )
 
     return apply_plot_style(fig)
 
 
 def create_residual_vs_factor_plot(
-    factor_values: np.ndarray,
-    residuals: np.ndarray,
-    factor_name: str,
-    factor_units: Optional[str] = None,
-    response_units: Optional[str] = None,
+    factor_values: np.ndarray, residuals: np.ndarray, factor_name: str
 ) -> go.Figure:
     """
     Create residuals vs factor plot.
@@ -736,10 +719,6 @@ def create_residual_vs_factor_plot(
         Model residuals
     factor_name : str
         Name of the factor for axis label
-    factor_units : Optional[str]
-        Units for the factor axis (e.g., "°C"). If None, no units shown.
-    response_units : Optional[str]
-        Units for the residuals axis (e.g., "kg"). If None, no units shown.
 
     Returns
     -------
@@ -779,10 +758,8 @@ def create_residual_vs_factor_plot(
     fig.add_hline(
         y=0, line=dict(color=PLOT_COLORS["danger"], dash="dash", width=2)
     )
-    x_label = _label_with_units(factor_name, factor_units)
-    residuals_label = _label_with_units("Residuals", response_units)
     fig.update_layout(
-        xaxis_title=x_label, yaxis_title=residuals_label, height=250
+        xaxis_title=factor_name, yaxis_title="Residuals", height=250
     )
 
     return apply_plot_style(fig)
@@ -800,8 +777,6 @@ def create_response_trace_plot(
     response_name: str,
     ci_lower: Optional[np.ndarray] = None,
     ci_upper: Optional[np.ndarray] = None,
-    factor_units: Optional[str] = None,
-    response_units: Optional[str] = None,
 ) -> go.Figure:
     """
     Create response trace plot for prediction profiler.
@@ -824,10 +799,6 @@ def create_response_trace_plot(
         Lower 95% CI boundary (if available)
     ci_upper : Optional[np.ndarray]
         Upper 95% CI boundary (if available)
-    factor_units : Optional[str]
-        Units for the factor x-axis (e.g., "°C"). If None, no units shown.
-    response_units : Optional[str]
-        Units for the response y-axis (e.g., "kg"). If None, no units shown.
 
     Returns
     -------
@@ -900,12 +871,11 @@ def create_response_trace_plot(
         )
     )
 
-    response_label = _label_with_units(response_name, response_units)
     fig.update_layout(
         height=200,
         margin=dict(l=40, r=10, t=20, b=40),
         xaxis_title=None,
-        yaxis_title=response_label,
+        yaxis_title=response_name,
         showlegend=False,
     )
 
@@ -924,7 +894,6 @@ def create_categorical_response_plot(
     current_level,
     factor_name: str,
     response_name: str,
-    response_units: Optional[str] = None,
 ) -> go.Figure:
     """
     Create bar chart for categorical factor in profiler.
@@ -941,8 +910,6 @@ def create_categorical_response_plot(
         Name of the factor
     response_name : str
         Name of the response
-    response_units : Optional[str]
-        Units for the response y-axis (e.g., "kg"). If None, no units shown.
 
     Returns
     -------
@@ -978,12 +945,11 @@ def create_categorical_response_plot(
         )
     )
 
-    response_label = _label_with_units(response_name, response_units)
     fig.update_layout(
         height=200,
         margin=dict(l=40, r=10, t=20, b=40),
         xaxis_title=None,
-        yaxis_title=response_label,
+        yaxis_title=response_name,
         showlegend=False,
     )
 
@@ -997,9 +963,6 @@ def create_contour_plot(
     x_factor_name: str,
     y_factor_name: str,
     response_name: str,
-    x_factor_units: Optional[str] = None,
-    y_factor_units: Optional[str] = None,
-    response_units: Optional[str] = None,
 ) -> go.Figure:
     """
     Create 2D contour plot of response surface.
@@ -1018,12 +981,6 @@ def create_contour_plot(
         Name of Y-axis factor
     response_name : str
         Name of response
-    x_factor_units : Optional[str]
-        Units for the X-axis factor (e.g., "°C"). If None, no units shown.
-    y_factor_units : Optional[str]
-        Units for the Y-axis factor (e.g., "psi"). If None, no units shown.
-    response_units : Optional[str]
-        Units for the colorbar label (e.g., "kg"). If None, no units shown.
 
     Returns
     -------
@@ -1066,13 +1023,9 @@ def create_contour_plot(
         )
     )
 
-    x_label = _label_with_units(x_factor_name, x_factor_units)
-    y_label = _label_with_units(y_factor_name, y_factor_units)
-    response_label = _label_with_units(response_name, response_units)
-    fig.data[0].colorbar.title = response_label
     fig.update_layout(
-        xaxis_title=x_label,
-        yaxis_title=y_label,
+        xaxis_title=x_factor_name,
+        yaxis_title=y_factor_name,
         height=500,
         showlegend=True,
     )
@@ -1087,9 +1040,6 @@ def create_3d_surface_plot(
     x_factor_name: str,
     y_factor_name: str,
     response_name: str,
-    x_factor_units: Optional[str] = None,
-    y_factor_units: Optional[str] = None,
-    response_units: Optional[str] = None,
 ) -> go.Figure:
     """
     Create 3D surface plot of response surface.
@@ -1108,12 +1058,6 @@ def create_3d_surface_plot(
         Name of Y-axis factor
     response_name : str
         Name of response
-    x_factor_units : Optional[str]
-        Units for the X-axis factor (e.g., "°C"). If None, no units shown.
-    y_factor_units : Optional[str]
-        Units for the Y-axis factor (e.g., "psi"). If None, no units shown.
-    response_units : Optional[str]
-        Units for the Z-axis and colorbar label (e.g., "kg"). If None, no units shown.
 
     Returns
     -------
@@ -1150,14 +1094,11 @@ def create_3d_surface_plot(
         )
     )
 
-    x_label = _label_with_units(x_factor_name, x_factor_units)
-    y_label = _label_with_units(y_factor_name, y_factor_units)
-    response_label = _label_with_units(response_name, response_units)
     fig.update_layout(
         scene=dict(
-            xaxis_title=x_label,
-            yaxis_title=y_label,
-            zaxis_title=response_label,
+            xaxis_title=x_factor_name,
+            yaxis_title=y_factor_name,
+            zaxis_title=response_name,
             camera=dict(eye=dict(x=1.5, y=1.5, z=1.3)),
         ),
         height=600,

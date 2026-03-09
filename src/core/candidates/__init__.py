@@ -10,7 +10,6 @@ from src.core.candidates.generators import (
     generate_axial_points,
     generate_candidate_pool,
     generate_augmentation_candidates,
-    evaluate_candidate_pool_quality
 )
 
 __all__ = [
@@ -19,5 +18,4 @@ __all__ = [
     'generate_axial_points',
     'generate_candidate_pool',
     'generate_augmentation_candidates',
-    'evaluate_candidate_pool_quality',
 ]

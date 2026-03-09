@@ -217,7 +217,11 @@ def dataframe_to_factors(df: pd.DataFrame) -> tuple[List[Factor], List[str]]:
                 changeability = ChangeabilityLevel.EASY  # Default
             
             # Units
-            units = str(row['Units']).strip()
+            # Handle both string and list formats (st.data_editor can return either)
+            units_value = row['Units']
+            if isinstance(units_value, list):
+                units_value = units_value[0] if len(units_value) > 0 else ''
+            units = str(units_value).strip()
             units = units if units and units.lower() not in ['nan', 'none', ''] else None
             
             # Create factor

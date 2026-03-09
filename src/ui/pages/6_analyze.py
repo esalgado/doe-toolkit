@@ -30,7 +30,8 @@ from src.ui.utils.plotting import (
     create_residual_plot,
     create_logworth_plot,
     create_qq_plot,
-    create_half_normal_plot
+    create_half_normal_plot,
+    _label_with_units,
 )
 from src.ui.components.model_builder import display_model_builder, format_term_for_display, display_stepwise_button
 from src.ui.components.diagnostics_display import display_diagnostics_tab
@@ -331,6 +332,14 @@ st.divider()
 
 st.subheader("📈 Analysis Results")
 
+# Build unit lookup dicts for current responses and factors
+_response_defs = st.session_state.get('response_definitions', [])
+_response_units_map = {
+    r['name']: r.get('units') for r in _response_defs
+}
+_factor_units_map = {f.name: f.units for f in factors}
+current_response_units = _response_units_map.get(selected_response)
+
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 Model Fit", "📉 Effects & Residuals",
     "🔍 Design Diagnostics", "📈 Profiler"
@@ -353,7 +362,10 @@ with tab1:
         else:
             model_p = np.nan
         
-        fig = create_parity_plot(response_filtered, results.fitted_values)
+        fig = create_parity_plot(
+            response_filtered, results.fitted_values,
+            response_units=current_response_units,
+        )
         st.plotly_chart(fig, width='stretch', theme=None)
         if np.isnan(model_p):
             p_display = "N/A"
@@ -370,7 +382,10 @@ with tab1:
     
     with col2:
         st.markdown("**Residuals vs Fitted**")
-        fig = create_residual_plot(results.fitted_values, results.residuals)
+        fig = create_residual_plot(
+            results.fitted_values, results.residuals,
+            response_units=current_response_units,
+        )
         st.plotly_chart(fig, width='stretch')
     
     st.divider()
@@ -512,9 +527,13 @@ with tab2:
                                 name='Effect', showlegend=False
                             ))
                             
+                            response_adj_label = _label_with_units(
+                                f"{selected_response} (adjusted)",
+                                current_response_units,
+                            )
                             fig.update_layout(
                                 xaxis_title=format_term_for_display(term),
-                                yaxis_title=f"{selected_response} (adjusted)",
+                                yaxis_title=response_adj_label,
                                 height=300, showlegend=False
                             )
                             fig = apply_plot_style(fig)
@@ -544,7 +563,8 @@ with tab2:
             hovertemplate='Run %{x}<br>Residual: %{y:.3f}<extra></extra>'
         ))
         fig.add_hline(y=0, line=dict(color=PLOT_COLORS['danger'], dash='dash', width=2))
-        fig.update_layout(xaxis_title='Run Order', yaxis_title='Residuals', height=350)
+        residuals_label = _label_with_units('Residuals', current_response_units)
+        fig.update_layout(xaxis_title='Run Order', yaxis_title=residuals_label, height=350)
         fig = apply_plot_style(fig)
         st.plotly_chart(fig, width='stretch')
     
@@ -571,7 +591,9 @@ with tab2:
                 hovertemplate=f'{factor.name}: %{{x}}<br>Residual: %{{y:.3f}}<extra></extra>'
             ))
             fig.add_hline(y=0, line=dict(color=PLOT_COLORS['danger'], dash='dash', width=2))
-            fig.update_layout(xaxis_title=factor.name, yaxis_title='Residuals', height=250)
+            factor_x_label = _label_with_units(factor.name, _factor_units_map.get(factor.name))
+            residuals_label = _label_with_units('Residuals', current_response_units)
+            fig.update_layout(xaxis_title=factor_x_label, yaxis_title=residuals_label, height=250)
             fig = apply_plot_style(fig)
             st.plotly_chart(fig, width='stretch')
     
@@ -623,6 +645,7 @@ with tab4:
         results=results,
         factors=factors,
         format_term_for_display=format_term_for_display,
+        response_units=current_response_units,
     )
 st.divider()
 

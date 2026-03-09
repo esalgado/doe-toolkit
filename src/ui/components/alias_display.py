@@ -103,7 +103,7 @@ def _render_body(
     # Header line
     res_label = f" — Resolution {resolution}" if resolution else ""
     st.caption(
-        f"Design type: **{design_type}**{res_label}. "
+        f"Design type: **{design_type or 'Unknown'}**{res_label}. "
         "Values shown are absolute Pearson correlations between model columns."
     )
 
@@ -140,7 +140,7 @@ def _render_body(
         )
 
     # Exact alias chains (fractional factorial only)
-    if "Fractional" in design_type and alias_structure:
+    if design_type and "Fractional" in design_type and alias_structure:
         st.divider()
         _render_alias_chains(alias_structure, factors)
 
@@ -326,7 +326,7 @@ def _build_heatmap(corr: np.ndarray, labels: List[str]) -> go.Figure:
     fig.update_layout(
         height=fig_size,
         width=fig_size,
-        margin=dict(l=10, r=10, t=10, b=10),
+        margin=dict(l=120, r=40, t=40, b=120),
         paper_bgcolor="#0e1117",
         plot_bgcolor="#0e1117",
         font=dict(color="#fafafa", size=11),

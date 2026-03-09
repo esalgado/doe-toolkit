@@ -162,7 +162,7 @@ def add_quick_navigation():
     
     progress = get_workflow_progress()
     
-    st.sidebar.page_link("app.py", label="🏠 Home", icon="🏠")
+    st.sidebar.page_link("app.py", label="🏠 Home")
     
     st.sidebar.page_link(
         "pages/1_define_factors.py",

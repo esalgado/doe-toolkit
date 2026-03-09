@@ -239,8 +239,7 @@ with st.expander("📚 Example Workflows"):
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: gray; font-size: 0.9em;'>
-    DOE Toolkit v0.1.0 | MIT License | 
-    <a href='https://github.com/bpimentel3/doe-toolkit'>GitHub</a> | 
-    Built with ❤️ for engineers who can't afford expensive software
+    DOE-Toolkit. Brian Pimentel, 2026. V.0.2.0 | MIT License | 
+    <a href='https://github.com/bpimentel3/doe-toolkit'>GitHub</a>
 </div>
 """, unsafe_allow_html=True)

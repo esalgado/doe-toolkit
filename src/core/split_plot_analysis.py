@@ -27,7 +27,7 @@ import statsmodels.api as sm
 from statsmodels.formula.api import ols
 
 from src.core.factors import Factor, ChangeabilityLevel
-from src.core.analysis_base import ANOVAResults, parse_model_term, compute_actual_coefficients
+from src.core.analysis_base import ANOVAResults, parse_model_term
 
 
 # ---------------------------------------------------------------------------
