@@ -131,25 +131,40 @@ def prepare_analysis_data(
 def validate_model_terms(terms: List[str], factors: List[Factor], design: pd.DataFrame) -> None:
     """Validate model terms compatibility."""
     factor_dict = {f.name: f for f in factors}
-    
+
+    # Operators that involve a transform — the primary factor must be continuous
+    _transform_operators = {
+        'transform', 'transform_power', 'transform_cross', 'transform_power_cross'
+    }
+
     for term in terms:
         if term == '1':
             continue
-        
+
         factor_list, operator = parse_model_term(term)
-        
+
         for fname in factor_list:
             if fname not in factor_dict:
                 raise ValueError(f"Factor '{fname}' in '{term}' not found")
-        
+
         if operator == '**':
+            # Plain quadratic: I(A**2)
             factor = factor_dict[factor_list[0]]
             if not factor.is_continuous():
                 raise ValueError(f"Quadratic '{term}' requires continuous factor")
-            
             unique_vals = design[factor.name].nunique()
             if unique_vals <= 2:
                 warnings.warn(f"Quadratic '{term}': only {unique_vals} levels")
+
+        elif operator in _transform_operators:
+            # Transform terms: the first factor in factor_list is always the
+            # raw factor being transformed — it must be continuous.
+            primary_factor = factor_dict[factor_list[0]]
+            if not primary_factor.is_continuous():
+                raise ValueError(
+                    f"Transform term '{term}' requires a continuous factor; "
+                    f"'{factor_list[0]}' is not continuous."
+                )
 
 
 # ANOVAResults is imported from analysis_base
@@ -172,17 +187,26 @@ class ANOVAAnalysis:
         self.response_name = response_name
         self.block_as_random = block_as_random
 
-        # Build the design space and always encode to coded [-1, +1] space
-        # before analysis.  The incoming ``design`` may be in natural units
-        # (the canonical session-state format since Phase 2) or already coded
-        # (legacy callers).  Using DesignSpace guarantees the model is always
-        # fit on a coded matrix, making coefficients directly comparable and
-        # compute_actual_coefficients() unconditionally correct.
+        # Build the design space and encode to coded [-1, +1] space for the
+        # primary analysis data.  The incoming ``design`` may be in natural
+        # units (the canonical session-state format since Phase 2) or already
+        # coded (legacy callers).  Using DesignSpace guarantees the coded
+        # matrix is always available for polynomial models.
+        #
+        # Transform terms (np.log, np.sqrt, I(1/x), np.exp) must be evaluated
+        # in natural units — applying log to a coded value of -1 produces NaN.
+        # self.natural_data retains the original factor values so that Patsy
+        # can correctly evaluate transform terms when they appear in a model.
         self._design_space = DesignSpace.from_factors(factors)
         self.design = self._design_space.encode_dataframe(design)
 
         self.data = prepare_analysis_data(
             self.design, response, factors, response_name
+        )
+        # Natural-unit data frame: decoded back from coded so it is always
+        # consistent with self.design regardless of what the caller passed in.
+        self.natural_data = prepare_analysis_data(
+            self._design_space.decode_dataframe(self.design), response, factors, response_name
         )
         self.rename_map = {}
         self.design_structure = detect_split_plot_structure(self.design, factors)
@@ -217,23 +241,77 @@ class ANOVAAnalysis:
         self.current_results = results
         return results
     
+    @staticmethod
+    def _has_transform_terms(model_terms: List[str]) -> bool:
+        """
+        Return True if any term in *model_terms* is a transform term.
+
+        Transform terms require evaluation in natural (engineering) units.
+        Patsy cannot evaluate ``np.log(A)`` meaningfully when ``A`` is coded
+        to ``[-1, +1]`` because negative coded values produce NaN/complex
+        results for log and sqrt.
+
+        Parameters
+        ----------
+        model_terms : List[str]
+            Model terms in patsy notation.
+
+        Returns
+        -------
+        bool
+        """
+        from src.core.analysis_base import _TRANSFORM_PREFIXES
+        return any(
+            any(term.startswith(pfx) for pfx in _TRANSFORM_PREFIXES)
+            or (term.startswith('I(') and any(
+                pfx in term for pfx in _TRANSFORM_PREFIXES
+            ))
+            for term in model_terms
+        )
+
+    def _select_fit_data(self, model_terms: List[str]) -> pd.DataFrame:
+        """
+        Choose the data frame to pass to Patsy based on whether transform
+        terms are present.
+
+        - Polynomial-only models use ``self.data`` (coded space): coefficients
+          are comparable across factors and numerically stable.
+        - Models containing any transform term use ``self.natural_data``
+          (natural units): transforms are applied to meaningful physical
+          values, not to arbitrary [-1, +1] coded values.
+
+        Parameters
+        ----------
+        model_terms : List[str]
+            Model terms in patsy notation.
+
+        Returns
+        -------
+        pd.DataFrame
+            The appropriate data frame for OLS fitting.
+        """
+        if self._has_transform_terms(model_terms):
+            return self.natural_data
+        return self.data
+
     def _fit_fixed_effects_model(self, model_terms: List[str]) -> ANOVAResults:
         """Fit fixed effects ANOVA."""
         formula = self._build_formula(model_terms)
+        fit_data = self._select_fit_data(model_terms)
 
         if self.design_structure['has_blocking'] and not self.block_as_random:
             # Cast Block to str so patsy treats it as categorical without
             # requiring C() notation (which conflicts with factors named "C").
-            fit_data = self.data.copy()
+            fit_data = fit_data.copy()
             fit_data['Block'] = fit_data['Block'].astype(str)
             formula += " + Block"
             fitted_model = ols(formula, data=fit_data).fit()
         elif self.design_structure['has_blocking'] and self.block_as_random:
-            model = mixedlm(formula, data=self.data, groups=self.data['Block'], re_formula='1')
+            model = mixedlm(formula, data=fit_data, groups=fit_data['Block'], re_formula='1')
             fitted_model = model.fit(method='lbfgs')
         else:
-            fitted_model = ols(formula, data=self.data).fit()
-        
+            fitted_model = ols(formula, data=fit_data).fit()
+
         return self._build_results_object(fitted_model, model_terms, False)
     
     def _fit_mixed_effects_model(self, model_terms: List[str]) -> ANOVAResults:
@@ -258,7 +336,7 @@ class ANOVAAnalysis:
             )
 
         return fit_split_plot_anova(
-            data=self.data,
+            data=self._select_fit_data(model_terms),
             factors=self.factors,
             model_terms=model_terms,
             response_name=self.response_name,

@@ -181,6 +181,69 @@ class ANOVAResults:
 # Term parsing
 # ---------------------------------------------------------------------------
 
+# Transform prefixes recognised by parse_model_term.
+# Maps Patsy prefix → (numpy function name used for factor extraction).
+_TRANSFORM_PREFIXES: Tuple[str, ...] = (
+    "np.log(",
+    "np.sqrt(",
+    "np.exp(",
+    "I(1/",
+)
+
+
+def _extract_transform_factor(term: str) -> Optional[str]:
+    """
+    Return the raw factor name embedded in a transform term, or None.
+
+    Handles the four recognised transform forms::
+
+        np.log(A)   → 'A'
+        np.sqrt(A)  → 'A'
+        np.exp(A)   → 'A'
+        I(1/A)      → 'A'
+
+    The term must start with one of the known prefixes; the factor name is
+    the content between the prefix and the matching closing parenthesis.
+
+    Parameters
+    ----------
+    term : str
+        A single Patsy fragment (no cross ``*`` operators).
+
+    Returns
+    -------
+    str or None
+        Raw factor name, or ``None`` if not a recognised transform.
+    """
+    for prefix in _TRANSFORM_PREFIXES:
+        if term.startswith(prefix):
+            # Strip prefix and trailing ')'
+            inner = term[len(prefix):]
+            if inner.endswith(')'):
+                inner = inner[:-1]
+            return inner.strip()
+    return None
+
+
+def _split_at_outer_star(term: str) -> Tuple[str, str]:
+    """
+    Split a term at the first ``*`` that sits outside all parentheses.
+
+    Returns ``(left, right)`` where ``right`` is everything after the ``*``.
+    If no outer ``*`` exists, returns ``(term, ''')``.
+
+    Used to separate ``np.log(A)*B`` into ``('np.log(A)', 'B')``.
+    """
+    depth = 0
+    for i, ch in enumerate(term):
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+        elif ch == '*' and depth == 0:
+            return term[:i], term[i + 1:]
+    return term, ''
+
 
 def parse_model_term(term: str) -> Tuple[List[str], str]:
     """
@@ -188,9 +251,16 @@ def parse_model_term(term: str) -> Tuple[List[str], str]:
 
     Recognised term forms
     ---------------------
-    - Main effect  : ``'A'``   → ``(['A'], '')``
-    - Interaction  : ``'A*B'`` → ``(['A', 'B'], '*')``
-    - Quadratic    : ``'I(A**2)'`` → ``(['A'], '**')``
+    - Main effect         : ``'A'``              → ``(['A'], '')``
+    - Interaction         : ``'A*B'``            → ``(['A', 'B'], '*')``
+    - Quadratic           : ``'I(A**2)'``        → ``(['A'], '**')``
+    - Transform           : ``'np.log(A)'``      → ``(['A'], 'transform')``
+    - Transform power     : ``'I(np.log(A)**2)'``→ ``(['A'], 'transform_power')``
+    - Transform cross     : ``'np.log(A)*B'``    → ``(['A', 'B'], 'transform_cross')``
+    - Transform pwr cross : ``'I(np.log(A)**2)*B'`` → ``(['A', 'B'], 'transform_power_cross')``
+
+    The ``factor_list`` always contains raw design factor names (e.g.
+    ``'Temperature'``), never the transform wrapper strings.
 
     Parameters
     ----------
@@ -202,8 +272,9 @@ def parse_model_term(term: str) -> Tuple[List[str], str]:
     factor_list : List[str]
         Names of the constituent factor(s).
     operator : str
-        ``'*'`` for interactions, ``'**'`` for quadratic terms, ``''`` for
-        main effects.
+        One of ``''``, ``'*'``, ``'**'``, ``'transform'``,
+        ``'transform_power'``, ``'transform_cross'``,
+        ``'transform_power_cross'``.
 
     Examples
     --------
@@ -213,19 +284,79 @@ def parse_model_term(term: str) -> Tuple[List[str], str]:
     (['Temperature', 'Pressure'], '*')
     >>> parse_model_term('I(Temperature**2)')
     (['Temperature'], '**')
+    >>> parse_model_term('np.log(Temperature)')
+    (['Temperature'], 'transform')
+    >>> parse_model_term('np.log(Temperature)*Pressure')
+    (['Temperature', 'Pressure'], 'transform_cross')
+    >>> parse_model_term('I(np.log(Temperature)**2)*Pressure')
+    (['Temperature', 'Pressure'], 'transform_power_cross')
     """
-    if '*' in term and not term.startswith('I('):
-        # Interaction: A*B
+    # ------------------------------------------------------------------ #
+    # I(...**n) — power wrapper; base may be a plain factor or transform  #
+    # Examples: I(A**2), I(np.log(A)**2), I(np.log(A)**2)*B              #
+    # ------------------------------------------------------------------ #
+    if term.startswith('I(') and '**' in term:
+        # Find the ')' that closes the outer I( by tracking paren depth.
+        # term.index(')') would find the first ')' which may be inside a
+        # nested transform such as I(np.log(A)**2).
+        depth = 0
+        close = -1
+        for _i, _ch in enumerate(term):
+            if _ch == '(':
+                depth += 1
+            elif _ch == ')':
+                depth -= 1
+                if depth == 0:
+                    close = _i
+                    break
+        if close == -1:
+            # Malformed term — fall through to main-effect
+            return [term.strip()], ''
+        power_content = term[2:close]           # e.g. 'A**2' or 'np.log(A)**2'
+        remainder = term[close + 1:]            # e.g. '' or '*B'
+
+        base_fragment, _ = power_content.rsplit('**', 1)
+        base_fragment = base_fragment.strip()
+        raw_factor = _extract_transform_factor(base_fragment)
+
+        if remainder.startswith('*'):
+            # Power × cross: I(A**2)*B  or  I(np.log(A)**2)*B
+            cross_factor = remainder[1:].strip()
+            if raw_factor is not None:
+                return [raw_factor, cross_factor], 'transform_power_cross'
+            return [base_fragment, cross_factor], '**'
+
+        if raw_factor is not None:
+            return [raw_factor], 'transform_power'
+        return [base_fragment], '**'
+
+    # ------------------------------------------------------------------ #
+    # Transform terms (no I() power wrapper)                              #
+    # Examples: np.log(A), np.log(A)*B                                   #
+    # ------------------------------------------------------------------ #
+    for prefix in _TRANSFORM_PREFIXES:
+        if term.startswith(prefix):
+            base_fragment, remainder = _split_at_outer_star(term)
+            raw_factor = _extract_transform_factor(base_fragment)
+            if raw_factor is None:
+                break  # Malformed — fall through to main-effect
+            if remainder:
+                cross_factor = remainder.strip()
+                return [raw_factor, cross_factor], 'transform_cross'
+            return [raw_factor], 'transform'
+
+    # ------------------------------------------------------------------ #
+    # Plain interaction: A*B  (checked AFTER transforms to avoid          #
+    # misclassifying np.log(A)*B as an interaction)                      #
+    # ------------------------------------------------------------------ #
+    if '*' in term:
         factor_list = [f.strip() for f in term.split('*')]
         return factor_list, '*'
-    elif term.startswith('I(') and '**' in term:
-        # Quadratic: I(A**2)
-        inner = term[2:-1]
-        base = inner.split('**')[0].strip()
-        return [base], '**'
-    else:
-        # Main effect
-        return [term.strip()], ''
+
+    # ------------------------------------------------------------------ #
+    # Plain main effect: A                                                #
+    # ------------------------------------------------------------------ #
+    return [term.strip()], ''
 
 
 # ---------------------------------------------------------------------------
