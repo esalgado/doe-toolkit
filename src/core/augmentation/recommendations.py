@@ -315,21 +315,31 @@ def _recommend_estimability_fix(
     issue: Issue,
     diagnostics: DesignDiagnosticSummary
 ) -> Optional[DiagnosticAugmentationRecommendation]:
-    """Recommend D-optimal augmentation to fix collinearity."""
-    
+    """Recommend D-optimal augmentation to fix collinearity.
+
+    The affected_terms in an estimability issue are *existing* model terms with
+    high VIF, not new terms to add.  We therefore signal the orthogonality
+    mode so the plan executor adds runs that support the current model better
+    rather than extending it.
+    """
     strategy = 'd_optimal'
-    
-    # Estimate runs needed
+
+    # Runs needed: at least one per problematic term, minimum = n_factors
     n_problematic = len(issue.affected_terms)
     n_runs = max(n_problematic + 2, diagnostics.n_factors)
-    
+
+    affected_label = ', '.join(issue.affected_terms[:3])
+    if len(issue.affected_terms) > 3:
+        affected_label += f' (+{len(issue.affected_terms) - 3} more)'
+
     rationale = (
-        f"Add D-optimal runs to orthogonalize {', '.join(issue.affected_terms)}, "
-        "reducing collinearity and improving estimability."
+        f"Add D-optimal runs to improve orthogonality for {affected_label}. "
+        "These runs are chosen to maximise D-efficiency of the existing model, "
+        "reducing collinearity without changing which terms are in the model."
     )
-    
+
     expected_improvement = f"Reduce VIF for {', '.join(issue.affected_terms[:2])}"
-    
+
     return DiagnosticAugmentationRecommendation(
         issue=issue,
         strategy=strategy,
@@ -381,43 +391,91 @@ def _recommendation_to_plan(
         Executable plan, or None if conversion fails
     """
     
-    # Create strategy config
+    # Create strategy config and resolve strategy type
+    strategy_type = ''
+    extra_metadata: dict = {}
+
     if rec.strategy in ('full_foldover', 'single_factor_foldover'):
         if rec.strategy == 'full_foldover':
             config = FoldoverConfig(foldover_type='full')
         else:
-            # Extract factor from affected terms
             factor_to_fold = rec.issue.affected_terms[0] if rec.issue.affected_terms else None
             config = FoldoverConfig(
                 foldover_type='single_factor',
                 factor_to_fold=factor_to_fold,
                 reason=rec.rationale
             )
-        
         strategy_type = 'foldover'
-        
-    elif rec.strategy in ('d_optimal', 'd_optimal_quadratic', 'i_optimal'):
-        # Determine model terms to add
-        if rec.strategy == 'd_optimal_quadratic':
-            # Add all quadratic terms
-            factor_names = [f.name for f in diagnostics.factors]
-            new_terms = [f"{f}^2" for f in factor_names]
-        else:
-            # Use affected terms as new model terms
-            new_terms = rec.issue.affected_terms if rec.issue.affected_terms else []
-        
+
+    elif rec.strategy == 'd_optimal':
+        # Orthogonality fix: add runs to support the *existing* model.
+        # Read the stored model_terms (in build_model_matrix syntax) directly.
+        current_terms: list = []
+        for diag in diagnostics.response_diagnostics.values():
+            if diag.model_terms:
+                current_terms = list(diag.model_terms)
+                break
+        if not current_terms:
+            # Fallback: intercept + main effects
+            current_terms = ['1'] + [f.name for f in diagnostics.factors]
+
+        config = OptimalAugmentConfig(
+            new_model_terms=current_terms,
+            n_runs_to_add=rec.n_runs_to_add,
+            criterion='D'
+        )
+        strategy_type = 'd_optimal'
+        extra_metadata = {
+            'current_model_terms': current_terms,
+            'augmentation_purpose': 'orthogonality'
+        }
+
+    elif rec.strategy == 'd_optimal_quadratic':
+        factor_names = [f.name for f in diagnostics.factors]
+        quadratic_terms = [f"{f}^2" for f in factor_names]
+        # Current model terms: intercept + main effects (pre-quadratic)
+        current_terms = ['Intercept'] + factor_names
+        new_terms = current_terms + quadratic_terms
+
         config = OptimalAugmentConfig(
             new_model_terms=new_terms,
             n_runs_to_add=rec.n_runs_to_add,
-            criterion='D'  # TODO: support I-optimal
+            criterion='D'
         )
-        
         strategy_type = 'd_optimal'
-        
+        extra_metadata = {
+            'current_model_terms': current_terms,
+            'augmentation_purpose': 'model_extension'
+        }
+
+    elif rec.strategy == 'i_optimal':
+        # Prediction variance improvement: treat same as orthogonality
+        current_terms = ['1'] + [f.name for f in diagnostics.factors]
+        config = OptimalAugmentConfig(
+            new_model_terms=current_terms,
+            n_runs_to_add=rec.n_runs_to_add,
+            criterion='I'
+        )
+        strategy_type = 'd_optimal'  # routed through execute_optimal_plan
+        extra_metadata = {
+            'current_model_terms': current_terms,
+            'augmentation_purpose': 'orthogonality'
+        }
+
+    elif rec.strategy == 'center_points':
+        config = {}  # no config needed
+        strategy_type = 'center_points'
+
+    elif rec.strategy == 'replicates':
+        config = {}  # no config needed
+        strategy_type = 'replicates'
+
     else:
-        # Other strategies not yet implemented
+        # Strategy not yet implemented
         return None
-    
+
+    n_runs_to_add = rec.n_runs_to_add
+
     # Create plan
     plan = AugmentationPlan(
         plan_id=create_plan_id(),
@@ -426,8 +484,8 @@ def _recommendation_to_plan(
         strategy_config=config,
         original_design=diagnostics.original_design,
         factors=diagnostics.factors,
-        n_runs_to_add=rec.n_runs_to_add,
-        total_runs_after=diagnostics.n_runs + rec.n_runs_to_add,
+        n_runs_to_add=n_runs_to_add,
+        total_runs_after=diagnostics.n_runs + n_runs_to_add,
         expected_improvements={
             rec.issue.category: rec.expected_improvement
         },
@@ -439,7 +497,8 @@ def _recommendation_to_plan(
         metadata={
             'issue_category': rec.issue.category,
             'issue_severity': rec.issue.severity,
-            'mode': 'diagnostics_driven'
+            'mode': 'diagnostics_driven',
+            **extra_metadata
         }
     )
     

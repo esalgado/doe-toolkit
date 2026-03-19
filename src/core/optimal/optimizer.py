@@ -401,7 +401,7 @@ def cexch_optimize(
                         XtX = X_current.T @ X_current + 1e-10 * np.eye(p)
                         try:
                             XtX_inv = np.linalg.inv(XtX)
-                        except:
+                        except np.linalg.LinAlgError:
                             continue
 
                     X_current[i] = x_new

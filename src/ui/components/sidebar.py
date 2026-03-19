@@ -7,6 +7,85 @@ that should appear across all pages.
 
 import streamlit as st
 from datetime import datetime
+from typing import Optional
+
+import requests
+
+from src.__version__ import __version__
+
+_GITHUB_RELEASES_URL = (
+    "https://api.github.com/repos/bpimentel3/doe-toolkit/releases/latest"
+)
+
+
+def _fetch_latest_version() -> Optional[str]:
+    """
+    Fetch the latest release tag from GitHub.
+
+    Returns
+    -------
+    Optional[str]
+        The latest version string (e.g. '0.2.0'), or None if unreachable.
+
+    Notes
+    -----
+    Fails silently — a network error or timeout will return None so the
+    app continues to load normally.
+    """
+    try:
+        response = requests.get(_GITHUB_RELEASES_URL, timeout=3)
+        response.raise_for_status()
+        tag = response.json().get("tag_name", "")
+        return tag.lstrip("v") if tag else None
+    except Exception:
+        return None
+
+
+def _is_newer(remote: str, local: str) -> bool:
+    """
+    Compare two semantic version strings.
+
+    Parameters
+    ----------
+    remote : str
+        Version string from GitHub (e.g. '0.2.0').
+    local : str
+        Current installed version string (e.g. '0.1.0').
+
+    Returns
+    -------
+    bool
+        True if remote is strictly newer than local.
+    """
+    try:
+        remote_parts = tuple(int(x) for x in remote.split("."))
+        local_parts = tuple(int(x) for x in local.split("."))
+        return remote_parts > local_parts
+    except ValueError:
+        return False
+
+
+def add_version_footer() -> None:
+    """
+    Add version display and update notification to the sidebar footer.
+
+    Displays the current version and, if a newer GitHub release exists,
+    shows a banner with a link to the releases page.
+
+    Returns
+    -------
+    None
+    """
+    st.sidebar.markdown("---")
+
+    latest = _fetch_latest_version()
+    if latest and _is_newer(latest, __version__):
+        st.sidebar.warning(
+            f"🆕 **v{latest} available!** "
+            f"[Download on GitHub](https://github.com/bpimentel3/doe-toolkit/releases)"
+        )
+
+    st.sidebar.caption(f"DOE Toolkit v{__version__}")
 
 
 def add_export_section():
@@ -20,7 +99,7 @@ def add_export_section():
     st.sidebar.markdown("### 📤 Export")
     
     # Save Project button
-    if st.sidebar.button("💾 Save Project File", use_container_width=True, key="save_project_btn"):
+    if st.sidebar.button("💾 Save Project File", width='stretch', key="save_project_btn"):
         st.session_state['show_save_project'] = True
     
     if st.session_state.get('show_save_project'):
@@ -35,7 +114,7 @@ def add_export_section():
                 data=project_json,
                 file_name=f"doe_project_{timestamp}.doeproject",
                 mime="application/json",
-                use_container_width=True,
+                width='stretch',
                 key="download_project"
             )
             st.sidebar.success("✓ Ready to download!")
@@ -43,7 +122,7 @@ def add_export_section():
             st.sidebar.error(f"Save failed: {e}")
     
     # Generate Report button
-    if st.sidebar.button("📄 Generate HTML Report", use_container_width=True, key="generate_report_btn"):
+    if st.sidebar.button("📄 Generate HTML Report", width='stretch', key="generate_report_btn"):
         st.session_state['show_generate_report'] = True
     
     if st.session_state.get('show_generate_report'):
@@ -63,7 +142,7 @@ def add_export_section():
                         data=html_report,
                         file_name=f"doe_report_{timestamp}.html",
                         mime="text/html",
-                        use_container_width=True,
+                        width='stretch',
                         key="download_report"
                     )
                     st.sidebar.success("✓ Report ready!")
@@ -83,7 +162,7 @@ def add_quick_navigation():
     
     progress = get_workflow_progress()
     
-    st.sidebar.page_link("app.py", label="🏠 Home", icon="🏠")
+    st.sidebar.page_link("app.py", label="🏠 Home")
     
     st.sidebar.page_link(
         "pages/1_define_factors.py",
@@ -189,3 +268,6 @@ def build_standard_sidebar():
     
     # Export buttons at bottom
     add_export_section()
+
+    # Version display and update check at very bottom
+    add_version_footer()

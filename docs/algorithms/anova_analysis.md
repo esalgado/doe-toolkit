@@ -493,6 +493,8 @@ RMSE = √(SS_error / n)
 
 ## 10. References
 
+> **Note:** Citations below are based on standard attribution in the DOE literature. They have not been verified against source texts. Journal volume and page numbers should be treated as approximate.
+
 ### Primary References
 
 [1] **Montgomery, D. C. (2017).** *Design and Analysis of Experiments*, 9th Edition. Wiley.

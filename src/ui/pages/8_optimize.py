@@ -14,7 +14,7 @@ sys.path.insert(0, str(project_root))
 import streamlit as st
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Literal
+from typing import Dict, List
 
 from src.ui.utils.state_management import (
     initialize_session_state,
@@ -23,6 +23,7 @@ from src.ui.utils.state_management import (
     get_active_design,
     is_using_augmented_design
 )
+from src.core.coding import DesignSpace
 from src.ui.utils.plotting import (
     create_3d_surface_plot,
     create_contour_plot
@@ -46,6 +47,11 @@ st.title("Step 7: Response Optimization")
 design = get_active_design()
 factors = st.session_state['factors']
 fitted_models = st.session_state.get('fitted_models', {})
+
+# Models are always fit in coded space (ANOVAAnalysis encodes on construction).
+# Build the design space so optimizers can encode/decode factor settings.
+_design_space = DesignSpace.from_factors(factors)
+_model_is_coded = True  # invariant: ANOVAAnalysis always fits in coded space
 
 if not fitted_models:
     st.error("No fitted models available. Please complete analysis in Step 5.")
@@ -98,290 +104,452 @@ else:
         primary_response = None
 
 # Main content tabs
-if optimization_mode == 'single':
-    tab1, tab2, tab3 = st.tabs(["🎯 Find Optimum", "📈 Response Surface", "📊 Contours"])
-else:
+if optimization_mode != 'single':
     tab1, tab2 = st.tabs(["🎯 Multi-Response Optimization", "📈 Desirability Profile"])
 
-# Tab 1: Find Optimum (Single Response)
+# Single Response: render content directly
 if optimization_mode == 'single':
-    with tab1:
-        st.subheader(f"Optimize {primary_response}")
-        
-        # Optimization objective
-        objective = st.radio(
-            "Objective",
-            ["Maximize", "Minimize", "Target"],
-            horizontal=True,
-            key=f'objective_{primary_response}'
+    st.subheader(f"Optimize {primary_response}")
+
+    # Optimization objective
+    objective = st.radio(
+        "Objective",
+        ["Maximize", "Minimize", "Target"],
+        horizontal=True,
+        key=f'objective_{primary_response}'
+    )
+
+    if objective == "Target":
+        target_value = st.number_input(
+            "Target Value",
+            value=0.0,
+            key=f'target_{primary_response}'
         )
-        
-        if objective == "Target":
-            target_value = st.number_input(
-                "Target Value",
-                value=0.0,
-                key=f'target_{primary_response}'
-            )
-        
-        # Constraints on factors
-        st.markdown("**Factor Constraints**")
-        
-        factor_constraints = {}
-        for factor in factors:
-            if factor.is_continuous():
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    min_val = st.number_input(
-                        f"{factor.name} Min",
-                        value=float(factor.min_value),
-                        key=f'min_{factor.name}'
-                    )
-                
-                with col2:
-                    max_val = st.number_input(
-                        f"{factor.name} Max",
-                        value=float(factor.max_value),
-                        key=f'max_{factor.name}'
-                    )
-                
-                factor_constraints[factor.name] = (min_val, max_val)
-        
-        # Optimize button
-        if st.button("🔍 Find Optimal Settings", type="primary", use_container_width=True):
-            with st.spinner("Optimizing..."):
-                try:
-                    from src.core.optimization import optimize_response
-                    
-                    # Get fitted model
-                    anova_results = fitted_models[primary_response]
-                    
-                    # Prepare objective and target
-                    obj_map = {"Maximize": "maximize", "Minimize": "minimize", "Target": "target"}
-                    opt_objective = obj_map[objective]
-                    
-                    target_val = target_value if objective == "Target" else None
-                    
-                    # Run optimization
-                    opt_result = optimize_response(
-                        anova_results=anova_results,
-                        factors=factors,
-                        objective=opt_objective,
-                        target_value=target_val,
-                        bounds=factor_constraints if factor_constraints else None,
-                        seed=42
-                    )
-                    
-                    if opt_result.success:
-                        # Display results
-                        st.success(f"✅ Optimal settings found!")
-                        
-                        st.subheader("Optimal Factor Settings")
-                        for fname, value in opt_result.optimal_settings.items():
-                            factor = next(f for f in factors if f.name == fname)
-                            if factor.units:
-                                st.metric(fname, f"{value:.3f} {factor.units}")
-                            else:
-                                st.metric(fname, f"{value:.3f}")
-                        
-                        st.metric(f"Predicted {primary_response}", f"{opt_result.predicted_response:.3f}")
-                        
-                        # Confidence and prediction intervals
-                        ci_lower, ci_upper = opt_result.confidence_interval
-                        pi_lower, pi_upper = opt_result.prediction_interval
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.caption(f"95% Confidence Interval: [{ci_lower:.3f}, {ci_upper:.3f}]")
-                            st.caption("(for the mean response)")
-                        with col2:
-                            st.caption(f"95% Prediction Interval: [{pi_lower:.3f}, {pi_upper:.3f}]")
-                            st.caption("(for a single observation)")
-                        
-                        # Show optimization details
-                        with st.expander("🔍 Optimization Details"):
-                            st.write(f"**Iterations:** {opt_result.n_iterations}")
-                            st.write(f"**Objective Value:** {opt_result.objective_value:.6f}")
-                            st.write(f"**Status:** {opt_result.message}")
-                    else:
-                        st.error(f"Optimization failed: {opt_result.message}")
-                
-                except Exception as e:
-                    st.error(f"Optimization failed: {e}")
-                    st.exception(e)
-    
-    # Tab 2: Response Surface
-    with tab2:
-        st.subheader(f"Response Surface: {primary_response}")
-        
-        # Select 2 factors for surface plot
-        continuous_factors = [f for f in factors if f.is_continuous()]
-        
-        if len(continuous_factors) >= 2:
+
+    # Constraints on factors
+    st.markdown("**Factor Constraints**")
+
+    factor_constraints = {}
+    for factor in factors:
+        if factor.is_continuous():
             col1, col2 = st.columns(2)
-            
+
             with col1:
-                x_factor = st.selectbox("X-Axis Factor", [f.name for f in continuous_factors])
-            
+                min_val = st.number_input(
+                    f"{factor.name} Min",
+                    value=float(factor.min_value),
+                    key=f'min_{factor.name}'
+                )
+
             with col2:
-                y_factors = [f.name for f in continuous_factors if f.name != x_factor]
-                y_factor = st.selectbox("Y-Axis Factor", y_factors)
-            
-            # Generate surface
-            if st.button("Generate Surface", use_container_width=True):
-                with st.spinner("Generating response surface..."):
-                    try:
-                        # Get factor ranges
-                        x_fac = next(f for f in factors if f.name == x_factor)
-                        y_fac = next(f for f in factors if f.name == y_factor)
-                        
-                        x_vals = np.linspace(x_fac.min_value, x_fac.max_value, 30)
-                        y_vals = np.linspace(y_fac.min_value, y_fac.max_value, 30)
-                        
-                        X, Y = np.meshgrid(x_vals, y_vals)
-                        
-                        # Create prediction grid
-                        grid_design = pd.DataFrame({
-                            x_factor: X.ravel(),
-                            y_factor: Y.ravel()
-                        })
-                        
-                        # Add other factors at center
-                        for factor in factors:
-                            if factor.name not in [x_factor, y_factor]:
-                                if factor.is_continuous():
-                                    grid_design[factor.name] = (factor.min_value + factor.max_value) / 2
-                                else:
-                                    grid_design[factor.name] = factor.levels[0]
-                        
-                        # Encode grid to coded values before predicting
-                        from src.core.coding import encode_design
-                        grid_design_encoded = encode_design(grid_design, factors)
-                        
-                        # Predict
-                        results = fitted_models[primary_response]
-                        predictions = results.fitted_model.predict(grid_design_encoded)
-                        # Convert Series to numpy array before reshape
-                        Z_pred = np.array(predictions).reshape(X.shape)
-                        
-                        # Create 3D surface plot using centralized utility
-                        fig = create_3d_surface_plot(
-                            x_grid=x_vals,
-                            y_grid=y_vals,
-                            z_mesh=Z_pred,
-                            x_factor_name=x_factor,
-                            y_factor_name=y_factor,
-                            response_name=primary_response
-                        )
-                        
-                        st.plotly_chart(fig, use_container_width=True)
-                    
-                    except Exception as e:
-                        st.error(f"Surface generation failed: {e}")
-        else:
-            st.warning("Need at least 2 continuous factors for surface plots")
-    
-    # Tab 3: Contours
-    with tab3:
-        st.subheader(f"Contour Plot: {primary_response}")
-        
-        continuous_factors = [f for f in factors if f.is_continuous()]
-        
-        if len(continuous_factors) >= 2:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                x_factor = st.selectbox("X-Axis", [f.name for f in continuous_factors], key='contour_x')
-            
-            with col2:
-                y_factors = [f.name for f in continuous_factors if f.name != x_factor]
-                y_factor = st.selectbox("Y-Axis", y_factors, key='contour_y')
-            
-            if st.button("Generate Contours", use_container_width=True):
-                with st.spinner("Generating contours..."):
-                    try:
-                        # Similar to surface, but contour plot
-                        x_fac = next(f for f in factors if f.name == x_factor)
-                        y_fac = next(f for f in factors if f.name == y_factor)
-                        
-                        x_vals = np.linspace(x_fac.min_value, x_fac.max_value, 30)
-                        y_vals = np.linspace(y_fac.min_value, y_fac.max_value, 30)
-                        
-                        X, Y = np.meshgrid(x_vals, y_vals)
-                        
-                        grid_design = pd.DataFrame({
-                            x_factor: X.ravel(),
-                            y_factor: Y.ravel()
-                        })
-                        
-                        for factor in factors:
-                            if factor.name not in [x_factor, y_factor]:
-                                if factor.is_continuous():
-                                    grid_design[factor.name] = (factor.min_value + factor.max_value) / 2
-                        
-                        # Encode grid to coded values before predicting
-                        from src.core.coding import encode_design
-                        grid_design_encoded = encode_design(grid_design, factors)
-                        
-                        results = fitted_models[primary_response]
-                        predictions = results.fitted_model.predict(grid_design_encoded)
-                        # Convert Series to numpy array before reshape
-                        Z_pred = np.array(predictions).reshape(X.shape)
-                        
-                        # Create contour plot using centralized utility
-                        fig = create_contour_plot(
-                            x_grid=x_vals,
-                            y_grid=y_vals,
-                            z_mesh=Z_pred,
-                            x_factor_name=x_factor,
-                            y_factor_name=y_factor,
-                            response_name=primary_response
-                        )
-                        
-                        st.plotly_chart(fig, use_container_width=True)
-                    
-                    except Exception as e:
-                        st.error(f"Contour generation failed: {e}")
-        else:
-            st.warning("Need at least 2 continuous factors for contour plots")
+                max_val = st.number_input(
+                    f"{factor.name} Max",
+                    value=float(factor.max_value),
+                    key=f'max_{factor.name}'
+                )
+
+            factor_constraints[factor.name] = (min_val, max_val)
+
+    # Optimize button
+    if st.button("🔍 Find Optimal Settings", type="primary", width='stretch'):
+        with st.spinner("Optimizing..."):
+            try:
+                from src.core.optimization import optimize_response
+
+                anova_results = fitted_models[primary_response]
+                obj_map = {"Maximize": "maximize", "Minimize": "minimize", "Target": "target"}
+                opt_objective = obj_map[objective]
+                target_val = target_value if objective == "Target" else None
+
+                opt_result = optimize_response(
+                    anova_results=anova_results,
+                    factors=factors,
+                    objective=opt_objective,
+                    target_value=target_val,
+                    bounds=factor_constraints if factor_constraints else None,
+                    seed=42,
+                    model_is_coded=_model_is_coded,
+                )
+
+                if opt_result.success:
+                    st.success("✅ Optimal settings found!")
+
+                    # Persist to session state for HTML report
+                    if 'opt_results' not in st.session_state:
+                        st.session_state['opt_results'] = {}
+                    st.session_state['opt_results'][primary_response] = {
+                        'objective': objective,
+                        'optimal_settings': opt_result.optimal_settings,
+                        'predicted_response': opt_result.predicted_response,
+                        'confidence_interval': opt_result.confidence_interval,
+                        'prediction_interval': opt_result.prediction_interval,
+                        'figures': {},
+                    }
+
+                    # Silently generate surface/contour figures for the HTML
+                    # report. Uses the first two continuous factors by default.
+                    _cont_factors = [f for f in factors if f.is_continuous()]
+                    if len(_cont_factors) >= 2:
+                        try:
+                            from src.core.coding import encode_design
+                            _xf, _yf = _cont_factors[0], _cont_factors[1]
+                            _xv = np.linspace(_xf.min_value, _xf.max_value, 30)
+                            _yv = np.linspace(_yf.min_value, _yf.max_value, 30)
+                            _X, _Y = np.meshgrid(_xv, _yv)
+                            _grid = pd.DataFrame({
+                                _xf.name: _X.ravel(),
+                                _yf.name: _Y.ravel(),
+                            })
+                            for _f in factors:
+                                if _f.name not in [_xf.name, _yf.name]:
+                                    _grid[_f.name] = (
+                                        (_f.min_value + _f.max_value) / 2
+                                        if _f.is_continuous()
+                                        else _f.levels[0]
+                                    )
+                            _grid_enc = encode_design(_grid, factors)
+                            _preds = fitted_models[primary_response].fitted_model.predict(_grid_enc)
+                            _Z = np.array(_preds).reshape(_X.shape)
+                            _surface_fig = create_3d_surface_plot(
+                                x_grid=_xv, y_grid=_yv, z_mesh=_Z,
+                                x_factor_name=_xf.name, y_factor_name=_yf.name,
+                                response_name=primary_response
+                            )
+                            _contour_fig = create_contour_plot(
+                                x_grid=_xv, y_grid=_yv, z_mesh=_Z,
+                                x_factor_name=_xf.name, y_factor_name=_yf.name,
+                                response_name=primary_response
+                            )
+                            st.session_state['opt_results'][primary_response]['figures'] = {
+                                'surface': _surface_fig,
+                                'contour': _contour_fig,
+                            }
+                        except Exception:
+                            pass  # Non-critical; report omits plots gracefully
+
+                    st.subheader("Optimal Factor Settings")
+                    for fname, value in opt_result.optimal_settings.items():
+                        factor = next(f for f in factors if f.name == fname)
+                        if factor.units:
+                            st.metric(fname, f"{value:.3f} {factor.units}")
+                        else:
+                            st.metric(fname, f"{value:.3f}")
+
+                    st.metric(f"Predicted {primary_response}", f"{opt_result.predicted_response:.3f}")
+
+                    ci_lower, ci_upper = opt_result.confidence_interval
+                    pi_lower, pi_upper = opt_result.prediction_interval
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.caption(f"95% Confidence Interval: [{ci_lower:.3f}, {ci_upper:.3f}]")
+                        st.caption("(for the mean response)")
+                    with col2:
+                        st.caption(f"95% Prediction Interval: [{pi_lower:.3f}, {pi_upper:.3f}]")
+                        st.caption("(for a single observation)")
+
+                    with st.expander("🔍 Optimization Details"):
+                        st.write(f"**Iterations:** {opt_result.n_iterations}")
+                        st.write(f"**Objective Value:** {opt_result.objective_value:.6f}")
+                        st.write(f"**Status:** {opt_result.message}")
+                else:
+                    st.error(f"Optimization failed: {opt_result.message}")
+
+            except Exception as e:
+                st.error(f"Optimization failed: {e}")
+                st.exception(e)
 
 # Multi-response optimization
 elif optimization_mode == 'desirability':
     with tab1:
         st.subheader("Multi-Response Optimization via Desirability")
-        
+
         st.info(
-            "Define desirability functions for each response. "
-            "The optimizer will find factor settings that maximize overall desirability."
+            "Configure a desirability goal for each response. "
+            "The optimizer maximizes overall desirability — the geometric mean of "
+            "individual desirabilities — to find factor settings that satisfy all "
+            "response objectives simultaneously."
         )
-        
-        # Desirability configuration for each response
-        desirability_config = {}
-        
+
+        # --- Per-response desirability configuration ---
+        desirability_config: Dict[str, Dict] = {}
+
         for response_name in response_names:
-            with st.expander(f"⚙️ Configure {response_name}"):
-                goal = st.selectbox(
-                    "Goal",
-                    ["Maximize", "Minimize", "Target", "In Range"],
-                    key=f'goal_{response_name}'
+            with st.expander(f"⚙️ Configure: {response_name}", expanded=True):
+                col_goal, col_imp = st.columns([2, 1])
+
+                with col_goal:
+                    goal = st.selectbox(
+                        "Goal",
+                        ["Maximize", "Minimize", "Target"],
+                        key=f'goal_{response_name}'
+                    )
+
+                with col_imp:
+                    importance = st.slider(
+                        "Importance",
+                        min_value=1,
+                        max_value=5,
+                        value=3,
+                        key=f'importance_{response_name}',
+                        help="Relative importance in geometric mean (1=low, 5=critical)"
+                    )
+
+                col_lo, col_hi = st.columns(2)
+
+                with col_lo:
+                    low_val = st.number_input(
+                        "Low (d=0)" if goal == "Maximize" else
+                        "Low (d=1)" if goal == "Minimize" else
+                        "Low (d=0)",
+                        value=0.0,
+                        key=f'low_{response_name}'
+                    )
+
+                with col_hi:
+                    high_val = st.number_input(
+                        "High (d=1)" if goal == "Maximize" else
+                        "High (d=0)" if goal == "Minimize" else
+                        "High (d=0)",
+                        value=1.0,
+                        key=f'high_{response_name}'
+                    )
+
+                target_val: float = 0.0
+                if goal == "Target":
+                    target_val = st.number_input(
+                        "Target (d=1)",
+                        value=(low_val + high_val) / 2,
+                        key=f'target_{response_name}'
+                    )
+
+                weight_val = st.slider(
+                    "Weight (shape)",
+                    min_value=0.1,
+                    max_value=5.0,
+                    value=1.0,
+                    step=0.1,
+                    key=f'weight_{response_name}',
+                    help="1=linear ramp, >1=emphasize target, <1=more tolerant"
                 )
-                
-                importance = st.slider(
-                    "Importance",
-                    min_value=1,
-                    max_value=5,
-                    value=3,
-                    key=f'importance_{response_name}',
-                    help="Relative importance (1=low, 5=critical)"
-                )
-                
+
                 desirability_config[response_name] = {
                     'goal': goal,
-                    'importance': importance
+                    'low': low_val,
+                    'high': high_val,
+                    'target': target_val,
+                    'weight': weight_val,
+                    'importance': float(importance)
                 }
-        
-        st.markdown("**Note:** Multi-response optimization implementation coming soon!")
-        st.markdown("For now, optimize each response individually in single-response mode.")
+
+        st.divider()
+
+        # --- Factor bounds ---
+        with st.expander("🔧 Factor Bounds (optional)"):
+            factor_bounds_d: Dict[str, tuple] = {}
+            for factor in factors:
+                if factor.is_continuous():
+                    bc1, bc2 = st.columns(2)
+                    with bc1:
+                        bmin = st.number_input(
+                            f"{factor.name} Min",
+                            value=float(factor.min_value),
+                            key=f'dmin_{factor.name}'
+                        )
+                    with bc2:
+                        bmax = st.number_input(
+                            f"{factor.name} Max",
+                            value=float(factor.max_value),
+                            key=f'dmax_{factor.name}'
+                        )
+                    factor_bounds_d[factor.name] = (bmin, bmax)
+
+        # --- Validate config before allowing run ---
+        config_errors: List[str] = []
+        for rn, cfg in desirability_config.items():
+            if cfg['low'] >= cfg['high']:
+                config_errors.append(
+                    f"{rn}: Low must be less than High."
+                )
+            if cfg['goal'] == 'Target':
+                if not (cfg['low'] < cfg['target'] < cfg['high']):
+                    config_errors.append(
+                        f"{rn}: Target must be strictly between Low and High."
+                    )
+
+        if config_errors:
+            for err in config_errors:
+                st.error(err)
+
+        run_disabled = bool(config_errors)
+
+        if st.button(
+            "🔍 Find Optimal Settings",
+            type="primary",
+            disabled=run_disabled,
+            key='run_desirability'
+        ):
+            with st.spinner("Optimizing across all responses..."):
+                try:
+                    from src.core.optimization import (
+                        DesirabilityFunction,
+                        optimize_desirability
+                    )
+
+                    # Build DesirabilityFunction
+                    d_func = DesirabilityFunction(response_names)
+
+                    for rn, cfg in desirability_config.items():
+                        goal_map = {
+                            'Maximize': 'maximize',
+                            'Minimize': 'minimize',
+                            'Target': 'target'
+                        }
+                        d_func.add_response(
+                            response_name=rn,
+                            objective=goal_map[cfg['goal']],
+                            low=cfg['low'],
+                            high=cfg['high'],
+                            target=cfg['target'] if cfg['goal'] == 'Target' else None,
+                            weight=cfg['weight'],
+                            importance=cfg['importance']
+                        )
+
+                    # Run optimizer
+                    d_result = optimize_desirability(
+                        anova_results_dict=fitted_models,
+                        factors=factors,
+                        desirability_func=d_func,
+                        bounds=factor_bounds_d if factor_bounds_d else None,
+                        seed=42,
+                        model_is_coded=_model_is_coded,
+                    )
+
+                    # Store result for profile tab
+                    st.session_state['desirability_result'] = d_result
+                    st.session_state['desirability_config'] = desirability_config
+
+                    if d_result.success:
+                        st.success("✅ Optimal settings found!")
+                    else:
+                        st.warning(
+                            f"⚠️ Optimizer did not fully converge: {d_result.message}. "
+                            "Results may still be useful."
+                        )
+
+                    # --- Optimal factor settings ---
+                    st.subheader("Optimal Factor Settings")
+                    settings_cols = st.columns(min(len(factors), 4))
+                    for idx, factor in enumerate(factors):
+                        val = d_result.optimal_settings.get(factor.name)
+                        if val is not None:
+                            label = f"{factor.name} ({factor.units})" if factor.units else factor.name
+                            settings_cols[idx % len(settings_cols)].metric(
+                                label, f"{val:.3f}"
+                            )
+
+                    st.divider()
+
+                    # --- Response predictions and desirabilities ---
+                    st.subheader("Predicted Responses & Desirabilities")
+
+                    results_rows = []
+                    for rn in response_names:
+                        results_rows.append({
+                            'Response': rn,
+                            'Predicted': round(d_result.predicted_responses[rn], 4),
+                            'Desirability (dᵢ)': round(
+                                d_result.individual_desirabilities[rn], 4
+                            ),
+                            'Goal': desirability_config[rn]['goal'],
+                            'Importance': int(desirability_config[rn]['importance'])
+                        })
+
+                    results_df = pd.DataFrame(results_rows)
+                    st.dataframe(results_df, hide_index=True, use_container_width=True)
+
+                    # Overall desirability — prominent display
+                    st.metric(
+                        "Overall Desirability (D)",
+                        f"{d_result.overall_desirability:.4f}",
+                        help="Geometric mean of individual desirabilities. "
+                             "D=1 is ideal; D=0 means at least one response is unacceptable."
+                    )
+
+                    with st.expander("🔍 Optimization Details"):
+                        st.write(f"**Iterations:** {d_result.n_iterations}")
+                        st.write(f"**Status:** {d_result.message}")
+
+                except Exception as e:
+                    st.error(f"Optimization failed: {e}")
+                    st.exception(e)
+
+    with tab2:
+        st.subheader("Desirability Profile")
+
+        d_result = st.session_state.get('desirability_result')
+        d_config = st.session_state.get('desirability_config', {})
+
+        if d_result is None:
+            st.info("Run the optimization first to see the desirability profile.")
+        else:
+            import plotly.graph_objects as go
+
+            # Individual desirability bar chart
+            resp_labels = list(d_result.individual_desirabilities.keys())
+            d_values = [d_result.individual_desirabilities[r] for r in resp_labels]
+
+            bar_colors = [
+                '#2ecc71' if v >= 0.8 else '#f39c12' if v >= 0.5 else '#e74c3c'
+                for v in d_values
+            ]
+
+            fig_bar = go.Figure(go.Bar(
+                x=resp_labels,
+                y=d_values,
+                marker_color=bar_colors,
+                text=[f"{v:.3f}" for v in d_values],
+                textposition='outside'
+            ))
+            fig_bar.update_layout(
+                title="Individual Desirabilities",
+                yaxis=dict(range=[0, 1.1], title="Desirability"),
+                xaxis_title="Response",
+                showlegend=False,
+                height=350
+            )
+            fig_bar.add_hline(
+                y=d_result.overall_desirability,
+                line_dash='dash',
+                line_color='navy',
+                annotation_text=f"Overall D = {d_result.overall_desirability:.3f}",
+                annotation_position='top right'
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+            # Desirability summary table
+            st.subheader("Summary at Optimal Settings")
+            summary_rows = []
+            for rn in resp_labels:
+                cfg = d_config.get(rn, {})
+                summary_rows.append({
+                    'Response': rn,
+                    'Goal': cfg.get('goal', '—'),
+                    'Low': cfg.get('low', '—'),
+                    'High': cfg.get('high', '—'),
+                    'Target': cfg.get('target', '—') if cfg.get('goal') == 'Target' else '—',
+                    'Predicted': round(d_result.predicted_responses[rn], 4),
+                    'dᵢ': round(d_result.individual_desirabilities[rn], 4)
+                })
+            st.dataframe(
+                pd.DataFrame(summary_rows),
+                hide_index=True,
+                use_container_width=True
+            )
+
+            st.metric(
+                "Overall Desirability (D)",
+                f"{d_result.overall_desirability:.4f}"
+            )
 
 # Navigation
 st.divider()
@@ -389,7 +557,7 @@ st.divider()
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    if st.button("← Back to Augmentation", use_container_width=True):
+    if st.button("← Back to Augmentation", width='stretch'):
         st.session_state['current_step'] = 6
         st.switch_page("pages/6_augmentation.py")
 

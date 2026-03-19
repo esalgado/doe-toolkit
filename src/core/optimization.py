@@ -26,6 +26,7 @@ from scipy.optimize import minimize, LinearConstraint as ScipyLinearConstraint
 
 from src.core.factors import Factor, FactorType
 from src.core.analysis import ANOVAResults
+from src.core.optimal.constraints import LinearConstraint
 
 
 # ============================================================
@@ -37,11 +38,20 @@ def predict_with_intervals(
     model: object,
     x_pred: np.ndarray,
     factor_names: List[str],
+    factors: Optional[List[Factor]] = None,
+    model_is_coded: bool = False,
     alpha: float = 0.05
 ) -> Tuple[float, Tuple[float, float], Tuple[float, float]]:
     """
     Predict response with confidence and prediction intervals.
-    
+
+    The optimizer always works in actual (natural) factor space so that
+    results are interpretable by the user.  The fitted model, however, may
+    have been trained on coded values when the stored design is in coded
+    space (e.g. CCD, fractional-factorial designs).  Set ``model_is_coded``
+    to ``True`` in that case; ``x_pred`` will then be encoded to coded space
+    before calling ``model.predict``.
+
     Raises
     ------
     AttributeError
@@ -52,12 +62,17 @@ def predict_with_intervals(
     model : statsmodels fitted model
         Fitted model from ANOVAResults
     x_pred : np.ndarray
-        Factor values at which to predict (actual scale)
+        Factor values at which to predict (actual / natural scale)
     factor_names : List[str]
         Factor names in order
+    factors : List[Factor], optional
+        Factor definitions, required when ``model_is_coded`` is True.
+    model_is_coded : bool, default=False
+        When True, encode ``x_pred`` from actual space to coded [-1, 1]
+        space before passing to ``model.predict``.
     alpha : float, default=0.05
         Significance level (0.05 gives 95% intervals)
-    
+
     Returns
     -------
     prediction : float
@@ -66,18 +81,20 @@ def predict_with_intervals(
         Confidence interval for mean response
     prediction_interval : Tuple[float, float]
         Prediction interval for individual observation
-    
+
     Notes
     -----
     Confidence interval estimates uncertainty in the mean response at x_pred.
     Prediction interval estimates uncertainty for a single future observation.
-    
+
     PI is always wider than CI because it includes both parameter uncertainty
     and random error variance.
     """
-    # Create prediction dataframe
     pred_df = pd.DataFrame([x_pred], columns=factor_names)
-    
+    if model_is_coded and factors is not None:
+        from src.core.coding import encode_design
+        pred_df = encode_design(pred_df, factors)
+
     # Get prediction with confidence interval
     try:
         pred_result = model.get_prediction(pred_df)
@@ -148,7 +165,8 @@ def optimize_response(
     bounds: Optional[Dict[str, Tuple[float, float]]] = None,
     linear_constraints: Optional[List['LinearConstraint']] = None,
     alpha: float = 0.05,
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
+    model_is_coded: bool = False,
 ) -> OptimizationResult:
     """
     Find optimal factor settings for single response.
@@ -198,19 +216,26 @@ def optimize_response(
         raise ValueError("target_value must be provided when objective='target'")
     
     # Extract model and factor names
+    from src.core.coding import encode_design
     model = anova_results.fitted_model
     factor_names = [f.name for f in factors]
-    
-    # Build bounds
+
+    # Build bounds — always in actual (natural) space so the user can
+    # interpret the results directly.
     if bounds is None:
         bounds_list = [(f.min_value, f.max_value) for f in factors]
     else:
         bounds_list = [bounds.get(f.name, (f.min_value, f.max_value)) for f in factors]
-    
+
     # Build objective function
     def objective_func(x: np.ndarray) -> float:
         """Objective to minimize (negate for maximize)."""
+        # x is in actual space; encode to coded space only when the model
+        # was fit on a coded design (CCD/factorial).  CSV-imported designs
+        # are stored in actual space, so no encoding is needed there.
         pred_df = pd.DataFrame([x], columns=factor_names)
+        if model_is_coded:
+            pred_df = encode_design(pred_df, factors)
         y_pred = model.predict(pred_df)[0]
         
         if objective == 'maximize':
@@ -272,7 +297,8 @@ def optimize_response(
     
     # Predict at optimum with intervals
     pred, ci, pi = predict_with_intervals(
-        model, x_opt, factor_names, alpha
+        model, x_opt, factor_names,
+        factors=factors, model_is_coded=model_is_coded, alpha=alpha
     )
     
     return OptimizationResult(
@@ -635,7 +661,8 @@ def optimize_desirability(
     desirability_func: DesirabilityFunction,
     bounds: Optional[Dict[str, Tuple[float, float]]] = None,
     linear_constraints: Optional[List['LinearConstraint']] = None,
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
+    model_is_coded: bool = False,
 ) -> DesirabilityResult:
     """
     Optimize multiple responses using desirability functions.
@@ -680,19 +707,22 @@ def optimize_desirability(
         if response_name not in anova_results_dict:
             raise ValueError(f"No model provided for response: {response_name}")
     
+    from src.core.coding import encode_design
     factor_names = [f.name for f in factors]
-    
-    # Build bounds
+
+    # Build bounds — always in actual (natural) space.
     if bounds is None:
         bounds_list = [(f.min_value, f.max_value) for f in factors]
     else:
         bounds_list = [bounds.get(f.name, (f.min_value, f.max_value)) for f in factors]
-    
+
     # Build objective function (maximize overall desirability)
     def objective_func(x: np.ndarray) -> float:
         """Objective to minimize (negate desirability)."""
         pred_df = pd.DataFrame([x], columns=factor_names)
-        
+        if model_is_coded:
+            pred_df = encode_design(pred_df, factors)
+
         # Predict all responses
         responses = {}
         for response_name, anova_results in anova_results_dict.items():
@@ -753,11 +783,13 @@ def optimize_desirability(
     x_opt = result.x
     optimal_settings = {factor_names[i]: x_opt[i] for i in range(len(factors))}
     
-    # Predict all responses at optimum
+    # Predict all responses at optimum.
     pred_df = pd.DataFrame([x_opt], columns=factor_names)
+    if model_is_coded:
+        pred_df = encode_design(pred_df, factors)
     predicted_responses = {}
     individual_desirabilities = {}
-    
+
     for response_name, anova_results in anova_results_dict.items():
         model = anova_results.fitted_model
         y_pred = model.predict(pred_df)[0]
@@ -782,18 +814,6 @@ def optimize_desirability(
 # ============================================================
 # SECTION 5: HELPER FUNCTIONS
 # ============================================================
-
-
-@dataclass
-class LinearConstraint:
-    """
-    Linear constraint on factors (reused from optimal_design.py).
-    
-    Represents constraints like: sum(coefficients[i] * x[i]) <= bound
-    """
-    coefficients: Dict[str, float]
-    bound: float
-    constraint_type: Literal['le', 'ge', 'eq'] = 'le'
 
 
 def _convert_linear_constraints(

@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 
 from src.core.factors import Factor, FactorType
+from src.core.coding import decode_design as _decode_design
 
 
 def full_factorial(
@@ -117,7 +118,12 @@ def full_factorial(
             raise ValueError(f"Number of blocks ({n_blocks}) cannot exceed number of runs ({len(design_matrix)})")
         
         design_matrix = _assign_blocks(design_matrix, n_blocks, randomize, random_seed)
-    
+
+    # Decode continuous factors from coded [-1, +1] to natural units before
+    # returning.  All downstream consumers (session state, UI, analysis)
+    # receive natural values; ANOVAAnalysis re-encodes internally.
+    design_matrix = _decode_design(design_matrix, factors)
+
     return design_matrix
 
 

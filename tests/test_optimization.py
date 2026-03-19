@@ -19,12 +19,12 @@ from src.core.optimization import (
     optimize_response,
     optimize_desirability,
     DesirabilityFunction,
-    LinearConstraint,
     desirability_maximize,
     desirability_minimize,
     desirability_target,
     predict_with_intervals
 )
+from src.core.optimal.constraints import LinearConstraint
 from src.core.analysis import ANOVAAnalysis, ANOVAResults
 
 

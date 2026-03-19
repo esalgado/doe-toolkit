@@ -22,8 +22,8 @@ from src.ui.utils.state_management import (
     reset_augmentation
 )
 from src.ui.components.augmentation_wizard import (
-    display_mode_selection,
-    display_goal_selection,
+    display_diagnostic_summary,
+    display_type_selection,
     display_augmentation_plans,
     display_plan_execution,
     display_no_augmentation_needed,
@@ -31,8 +31,7 @@ from src.ui.components.augmentation_wizard import (
 )
 from src.core.augmentation import (
     AugmentationRequest,
-    recommend_augmentation,
-    get_mode_availability
+    recommend_augmentation
 )
 
 # Initialize state
@@ -54,12 +53,12 @@ if not can_access_step(6):
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("← Go to Factor Definition", use_container_width=True):
+        if st.button("← Go to Factor Definition", width='stretch'):
             st.session_state['current_step'] = 1
             st.switch_page("pages/1_define_factors.py")
     
     with col2:
-        if st.button("Go to Import Data →", use_container_width=True):
+        if st.button("Go to Import Data →", width='stretch'):
             st.session_state['current_step'] = 4
             st.switch_page("pages/4_import_results.py")
     
@@ -86,7 +85,13 @@ if st.session_state.get('augmented_design') is not None:
     # Check if we have data for the augmented design yet
     design = get_active_design()
     
-    if len(design) == augmented.n_runs_total:
+    results_displayed = st.session_state.get('augmentation_results_displayed', False)
+
+    if results_displayed:
+        # Still on the results screen — re-render the full results view
+        display_plan_execution(st.session_state['selected_augmentation_plan'])
+
+    elif len(design) == augmented.n_runs_total:
         # User has uploaded new data
         st.success(
             "✅ **Augmented design data imported!**\n\n"
@@ -102,14 +107,14 @@ if st.session_state.get('augmented_design') is not None:
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("← Back to Analysis", use_container_width=True):
+            if st.button("← Back to Analysis", width='stretch'):
                 st.session_state['current_step'] = 5
-                st.switch_page("pages/5_analyze.py")
+                st.switch_page("pages/6_analyze.py")
         
         with col2:
-            if st.button("Optimize →", type="primary", use_container_width=True):
+            if st.button("Optimize →", type="primary", width='stretch'):
                 st.session_state['current_step'] = 7
-                st.switch_page("pages/7_optimize.py")
+                st.switch_page("pages/8_optimize.py")
     
     else:
         # Still waiting for new experimental data
@@ -162,7 +167,7 @@ if not st.session_state.get('quality_report'):
     
     # Show design preview
     with st.expander("👁️ View Design"):
-        st.dataframe(design, use_container_width=True, hide_index=False)
+        st.dataframe(design, width='stretch', hide_index=False)
     
     st.divider()
     
@@ -184,13 +189,13 @@ if not st.session_state.get('quality_report'):
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("📊 Go to Analysis", type="primary", use_container_width=True):
+        if st.button("📊 Go to Analysis", type="primary", width='stretch'):
             st.session_state['current_step'] = 5
-            st.switch_page("pages/5_analyze.py")
+            st.switch_page("pages/6_analyze.py")
     
     with col2:
         # Allow proceeding without analysis
-        if st.button("➡️ Continue Without Analysis", use_container_width=True):
+        if st.button("➡️ Continue Without Analysis", width='stretch'):
             st.session_state['skip_quality_check'] = True
             st.rerun()
     
@@ -220,49 +225,33 @@ if not st.session_state.get('quality_report'):
 quality_report = st.session_state['quality_report']
 diagnostics = st.session_state['diagnostics_summary']
 
-# Check mode availability
-availability = get_mode_availability(diagnostics)
+# Step 1 (always): show plain-text diagnostic summary
+display_diagnostic_summary(diagnostics)
 
-# Mode selection workflow
-if 'augmentation_mode' not in st.session_state:
-    # Step 1: Select mode
-    selected_mode = display_mode_selection(diagnostics)
-    
-    if selected_mode:
-        st.session_state['augmentation_mode'] = selected_mode
+st.divider()
+
+# Step 2: flat augmentation type selection
+if 'augmentation_type' not in st.session_state:
+    st.subheader("🔧 Choose an Augmentation Type")
+    selected_type = display_type_selection(diagnostics)
+
+    if selected_type:
+        st.session_state['augmentation_type'] = selected_type
         st.rerun()
-    
+
     st.stop()
 
-# Get selected mode
-mode = st.session_state['augmentation_mode']
-
-# Mode B: Goal selection
-if mode == 'enhance_design' and 'augmentation_goal' not in st.session_state:
-    selected_goal = display_goal_selection(diagnostics)
-    
-    if selected_goal:
-        st.session_state['augmentation_goal'] = selected_goal
-        st.rerun()
-    
-    # Back button
-    if st.button("← Back to Mode Selection"):
-        del st.session_state['augmentation_mode']
-        st.rerun()
-    
-    st.stop()
-
-# Generate augmentation plans if not already generated
+# Step 3: generate plans for the chosen type
 if 'augmentation_plans' not in st.session_state or not st.session_state['augmentation_plans']:
-    
+
     with st.spinner("Generating augmentation recommendations..."):
         try:
             # Budget constraint (optional user input)
             with st.sidebar:
                 st.header("Augmentation Settings")
-                
+
                 use_budget = st.checkbox("Limit additional runs", value=False)
-                
+
                 if use_budget:
                     budget_constraint = st.number_input(
                         "Maximum additional runs",
@@ -273,32 +262,28 @@ if 'augmentation_plans' not in st.session_state or not st.session_state['augment
                     )
                 else:
                     budget_constraint = None
-            
-            # Create augmentation request
+
             request = AugmentationRequest(
-                mode=mode,
+                mode='select_type',
                 diagnostics=diagnostics,
-                selected_goal=st.session_state.get('augmentation_goal'),
+                selected_goal=None,
+                selected_type=st.session_state['augmentation_type'],
                 budget_constraint=budget_constraint
             )
-            
-            # Generate plans
+
             plans = recommend_augmentation(request)
-            
-            # Save to state
             st.session_state['augmentation_plans'] = plans
-            
+
         except Exception as e:
             st.error(f"Failed to generate augmentation plans: {e}")
             st.exception(e)
-            
-            # Reset and go back
+
             if st.button("← Start Over"):
-                for key in ['augmentation_mode', 'augmentation_goal', 'augmentation_plans']:
+                for key in ['augmentation_type', 'augmentation_plans']:
                     if key in st.session_state:
                         del st.session_state[key]
                 st.rerun()
-            
+
             st.stop()
 
 # Display augmentation plans
@@ -306,25 +291,23 @@ plans = st.session_state['augmentation_plans']
 
 if not plans:
     st.warning(
-        "No augmentation plans could be generated. "
-        "This might indicate an issue with the design or your selected goal."
+        "No augmentation plans could be generated for the selected type. "
+        "Please try a different augmentation type."
     )
-    
-    # Reset and go back
-    if st.button("← Start Over"):
-        for key in ['augmentation_mode', 'augmentation_goal', 'augmentation_plans']:
+
+    if st.button("← Choose Different Type"):
+        for key in ['augmentation_type', 'augmentation_plans']:
             if key in st.session_state:
                 del st.session_state[key]
         st.rerun()
-    
+
     st.stop()
 
-# Show the augmentation wizard
-display_augmentation_plans(plans, mode)
+display_augmentation_plans(plans, 'select_type')
 
-# Back button
-if st.button("← Start Over"):
-    for key in ['augmentation_mode', 'augmentation_goal', 'augmentation_plans']:
+# Back / reset button
+if st.button("← Choose Different Type"):
+    for key in ['augmentation_type', 'augmentation_plans']:
         if key in st.session_state:
             del st.session_state[key]
     st.rerun()
@@ -332,19 +315,22 @@ if st.button("← Start Over"):
 # Sidebar: Plan comparison
 if len(plans) > 1:
     st.sidebar.header("Plan Comparison")
-    
-    comparison_data = []
-    for plan in plans:
-        comparison_data.append({
+
+    comparison_data = [
+        {
             'Plan': plan.plan_name,
-            'Utility': f"{plan.utility_score:.0f}",
             'Runs': plan.n_runs_to_add,
-            'Cost': f"${plan.experimental_cost:.0f}" if plan.experimental_cost else "N/A",
-            'Benefits': ', '.join(plan.benefits_responses[:2])
-        })
-    
-    comparison_df = pd.DataFrame(comparison_data)
-    st.sidebar.dataframe(comparison_df, use_container_width=True, hide_index=True)
+            'Total After': plan.total_runs_after,
+            'Benefits': ', '.join(plan.benefits_responses[:2]),
+        }
+        for plan in plans
+    ]
+
+    st.sidebar.dataframe(
+        pd.DataFrame(comparison_data),
+        width='stretch',
+        hide_index=True
+    )
 
 # Help section
 with st.sidebar.expander("ℹ️ Understanding Augmentation"):
@@ -363,5 +349,5 @@ with st.sidebar.expander("ℹ️ Understanding Augmentation"):
     **Costs vs Benefits:**
     - Additional runs require time and resources
     - But improve confidence in conclusions
-    - Utility score helps prioritize
+    - Compare plans by runs added and expected improvements
     """)

@@ -133,6 +133,9 @@ class ResponseDiagnostics:
     significant_effects: List[str] = field(default_factory=list)
     marginally_significant: List[str] = field(default_factory=list)
     
+    # Fitted model terms (in build_model_matrix syntax, e.g. ['1', 'A', 'B', 'A*B'])
+    model_terms: List[str] = field(default_factory=list)
+
     # Recommendations
     needs_augmentation: bool = False
     augmentation_reasons: List[str] = field(default_factory=list)
@@ -156,7 +159,7 @@ class ResponseDiagnostics:
         )
         self.issues.append(issue)
         
-        if severity == 'critical':
+        if severity in ('critical', 'warning'):
             self.needs_augmentation = True
             self.augmentation_reasons.append(description)
     
@@ -278,6 +281,47 @@ class DesignDiagnosticSummary:
         
         return list(self.response_diagnostics.keys())[0]
     
+    @property
+    def has_aliasing(self) -> bool:
+        """True if any response has an aliasing issue."""
+        return any(
+            any(i.category == 'aliasing' for i in diag.issues)
+            for diag in self.response_diagnostics.values()
+        )
+
+    @property
+    def has_high_vif(self) -> bool:
+        """True if any response has a collinearity / estimability issue."""
+        return any(
+            any(i.category == 'estimability' for i in diag.issues)
+            for diag in self.response_diagnostics.values()
+        )
+
+    @property
+    def has_lack_of_fit(self) -> bool:
+        """True if any response has a lack-of-fit issue."""
+        return any(
+            any(i.category == 'lack_of_fit' for i in diag.issues)
+            for diag in self.response_diagnostics.values()
+        )
+
+    @property
+    def has_rank_deficiency(self) -> bool:
+        """True if any response has a critical estimability (rank) issue."""
+        return any(
+            any(i.category == 'estimability' and i.severity == 'critical'
+                for i in diag.issues)
+            for diag in self.response_diagnostics.values()
+        )
+
+    @property
+    def has_insufficient_replication(self) -> bool:
+        """True if any response has a pure-error / replication issue."""
+        return any(
+            any(i.category == 'pure_error' for i in diag.issues)
+            for diag in self.response_diagnostics.values()
+        )
+
     def needs_any_augmentation(self) -> bool:
         """
         Check if any response needs augmentation.

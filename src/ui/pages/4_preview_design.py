@@ -22,6 +22,7 @@ from src.ui.utils.state_management import (
     can_access_step,
     invalidate_downstream_state
 )
+from src.core.coding import DesignSpace
 from src.core.factors import Factor
 from src.ui.utils.csv_parser import generate_doe_csv
 from src.ui.components.constraint_builder import (
@@ -154,7 +155,7 @@ if st.session_state.get('design') is None:
         col_left, col_right = st.columns([2.5, 1])
         
         with col_right:
-            if st.form_submit_button("+ Add Response", use_container_width=True):
+            if st.form_submit_button("+ Add Response", width='stretch'):
                 if new_name.strip():
                     # Validate response name
                     if not _validate_response_name(new_name, st.session_state['response_definitions']):
@@ -242,7 +243,7 @@ if st.session_state.get('design') is None:
                     st.warning(warning)
     
     # Generate button
-    if st.button("🔬 Generate Design", type="primary", use_container_width=True):
+    if st.button("🔬 Generate Design", type="primary", width='stretch'):
         
         with st.spinner("Generating design..."):
             try:
@@ -453,8 +454,12 @@ if st.session_state.get('design') is None:
                     else:  # Otherwise metadata was set directly to session_state already
                         st.session_state['design_metadata'] = current_metadata
                 
-                # Save design to session state (if not already done)
+                # Save design to session state.
+                # 'design' is always in natural units (display alias).
+                # 'design_space' carries the coding specs for analysis.
                 st.session_state['design'] = design
+                st.session_state['design_natural'] = design
+                st.session_state['design_space'] = DesignSpace.from_factors(factors)
                 
                 # Ensure metadata has design_type
                 if 'design_metadata' in st.session_state:
@@ -518,36 +523,35 @@ else:
             # Generate model builder
             model_builder = create_polynomial_builder(factors, model_type)
             
-            # Get design in coded space
+            # Encode design to coded space via DesignSpace
+            import numpy as np
             factor_names = [f.name for f in factors]
             if all(col in design.columns for col in factor_names):
-                from src.core.optimal.utils import code_point
-                import numpy as np
-                
-                # Code the design points
-                design_coded = np.array([
-                    code_point(design[factor_names].iloc[i].values, factors)
-                    for i in range(len(design))
-                ])
-                
+                _ds_preview = DesignSpace.from_factors(factors)
+                design_coded = _ds_preview.encode_dataframe(
+                    design[factor_names]
+                ).values
+
                 # Build model matrix
                 X = model_builder(design_coded)
                 XtX = X.T @ X
-                
+
                 # Get benchmark
                 det_benchmark, _ = compute_benchmark_criterion(
                     factors, model_type, model_builder, criterion_type='D'
                 )
-                
+
                 # Compute determinant and efficiency
                 det_design = np.linalg.det(XtX)
-                model_terms = generate_model_terms(factors, model_type, include_intercept=True)
+                model_terms = generate_model_terms(
+                    factors, model_type, include_intercept=True
+                )
                 n_params = len(model_terms)
-                
+
                 d_efficiency = compute_d_efficiency_vs_benchmark(
                     det_design, len(design), n_params, det_benchmark
                 )
-                
+
                 st.metric("D-Efficiency", f"{d_efficiency:.1f}%")
             else:
                 st.metric("D-Efficiency", "—")
@@ -575,7 +579,7 @@ else:
     else:
         preview_df = design
     
-    st.dataframe(preview_df, use_container_width=True)
+    st.dataframe(preview_df, width='stretch')
     
     # Additional info
     if metadata.get('generators'):
@@ -586,6 +590,21 @@ else:
                     st.code(f"{gen[0]} = {gen[1]}")
                 else:
                     st.code(gen)
+
+    # Alias / correlation structure (uses design-level model terms from Step 2)
+    _model_terms = st.session_state.get('model_terms') or ['1'] + [f.name for f in factors]
+    try:
+        from src.ui.components.alias_display import display_alias_correlation
+        display_alias_correlation(
+            design=design,
+            factors=factors,
+            model_terms=_model_terms,
+            design_type=design_type,
+            alias_structure=metadata.get('alias_structure'),
+            resolution=metadata.get('resolution'),
+        )
+    except Exception as _alias_err:
+        st.warning(f"Could not render alias structure: {_alias_err}")
     
     # Show constraints for D-Optimal designs
     if design_type == "D-Optimal" and st.session_state.get('constraints'):
@@ -621,13 +640,19 @@ else:
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
+        # Include design-level model terms from Step 2 so that re-importing
+        # the CSV pre-populates the analysis with the intended model.
+        _design_terms: list = st.session_state.get('model_terms') or []
+        _export_model_terms = {'__design__': _design_terms} if _design_terms else None
+
         # Generate CSV with metadata
         csv_content = generate_doe_csv(
             design=design,
             factors=factors,
             response_definitions=st.session_state.get('response_definitions'),
             design_type=design_type,
-            design_metadata=metadata
+            design_metadata=metadata,
+            model_terms=_export_model_terms,
         )
         
         st.download_button(
@@ -635,7 +660,7 @@ else:
             data=csv_content,
             file_name=f"doe_design_{timestamp}.csv",
             mime="text/csv",
-            use_container_width=True,
+            width='stretch',
             type="primary"
         )
     
@@ -653,7 +678,7 @@ else:
                 data=project_json,
                 file_name=f"doe_project_{timestamp}.doeproject",
                 mime="application/json",
-                use_container_width=True
+                width='stretch'
             )
         except Exception as e:
             st.error(f"Project export failed: {e}")
@@ -691,19 +716,19 @@ else:
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("🔄 Generate New Design", use_container_width=True):
+        if st.button("🔄 Generate New Design", width='stretch'):
             st.session_state['design'] = None
             st.session_state['design_metadata'] = {}
             invalidate_downstream_state(from_step=3)
             st.rerun()
     
     with col2:
-        if st.button("← Back to Configuration", use_container_width=True):
+        if st.button("← Back to Configuration", width='stretch'):
             st.session_state['current_step'] = 3
             st.switch_page("pages/3_choose_design.py")
     
     with col3:
-        if st.button("Import Results →", type="primary", use_container_width=True):
+        if st.button("Import Results →", type="primary", width='stretch'):
             st.session_state['current_step'] = 5
             st.switch_page("pages/5_import_results.py")
 
@@ -714,6 +739,6 @@ if st.session_state.get('design') is None:
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("← Back to Configuration", use_container_width=True):
+        if st.button("← Back to Configuration", width='stretch'):
             st.session_state['current_step'] = 3
             st.switch_page("pages/3_choose_design.py")

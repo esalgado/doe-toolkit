@@ -105,31 +105,135 @@ def mock_fitted_model():
 
 class TestBuildModelMatrix:
     """Test model matrix construction."""
-    
+
     def test_linear_terms(self, simple_design, simple_factors):
-        """Test main effects only."""
-        X = build_model_matrix(simple_design, simple_factors, ['1', 'A', 'B'])
-        
+        """Test main effects only — continuous factors."""
+        X, names = build_model_matrix(simple_design, simple_factors, ['1', 'A', 'B'])
+
         assert X.shape == (4, 3)
+        assert names == ['Intercept', 'A', 'B']
         assert np.allclose(X[:, 0], 1)  # Intercept
         assert np.allclose(X[:, 1], simple_design['A'])
         assert np.allclose(X[:, 2], simple_design['B'])
-    
+
     def test_interaction_terms(self, simple_design, simple_factors):
-        """Test interaction term."""
-        X = build_model_matrix(simple_design, simple_factors, ['1', 'A', 'B', 'A*B'])
-        
+        """Test interaction term — continuous."""
+        X, names = build_model_matrix(
+            simple_design, simple_factors, ['1', 'A', 'B', 'A*B']
+        )
+
         assert X.shape == (4, 4)
-        expected_interaction = simple_design['A'] * simple_design['B']
+        assert names[3] == 'A*B'
+        expected_interaction = simple_design['A'].values * simple_design['B'].values
         assert np.allclose(X[:, 3], expected_interaction)
-    
+
     def test_quadratic_terms(self, simple_design, simple_factors):
         """Test quadratic term."""
-        X = build_model_matrix(simple_design, simple_factors, ['1', 'A', 'A^2'])
-        
+        X, names = build_model_matrix(
+            simple_design, simple_factors, ['1', 'A', 'A^2']
+        )
+
         assert X.shape == (4, 3)
-        expected_quadratic = simple_design['A'] ** 2
+        assert names[2] == 'A^2'
+        expected_quadratic = simple_design['A'].values ** 2
         assert np.allclose(X[:, 2], expected_quadratic)
+
+    def test_categorical_main_effect_two_levels(self):
+        """2-level categorical expands to 1 column with effects coding."""
+        factors = [
+            Factor("Cat", FactorType.CATEGORICAL, ChangeabilityLevel.EASY,
+                   levels=['A', 'B'])
+        ]
+        design = pd.DataFrame({'Cat': ['A', 'B', 'A', 'B']})
+
+        X, names = build_model_matrix(design, factors, ['1', 'Cat'])
+
+        # 1 intercept + 1 effects column (k-1 = 1)
+        assert X.shape == (4, 2)
+        assert names == ['Intercept', 'Cat[A]']
+
+        # Effects coding: A -> +1, B (reference) -> -1
+        assert np.allclose(X[:, 1], [1, -1, 1, -1])
+
+    def test_categorical_main_effect_three_levels(self):
+        """3-level categorical expands to 2 effects-coded columns."""
+        factors = [
+            Factor("Cat", FactorType.CATEGORICAL, ChangeabilityLevel.EASY,
+                   levels=['A', 'B', 'C'])
+        ]
+        design = pd.DataFrame({'Cat': ['A', 'B', 'C', 'A', 'B', 'C']})
+
+        X, names = build_model_matrix(design, factors, ['1', 'Cat'])
+
+        # 1 intercept + 2 effects columns (k-1 = 2)
+        assert X.shape == (6, 3)
+        assert names == ['Intercept', 'Cat[A]', 'Cat[B]']
+
+        # Check effects coding: reference level C -> [-1, -1]
+        c_rows = design['Cat'] == 'C'
+        assert np.allclose(X[c_rows, 1], -1)
+        assert np.allclose(X[c_rows, 2], -1)
+
+        # A -> [+1, 0]
+        a_rows = design['Cat'] == 'A'
+        assert np.allclose(X[a_rows, 1], 1)
+        assert np.allclose(X[a_rows, 2], 0)
+
+        # B -> [0, +1]
+        b_rows = design['Cat'] == 'B'
+        assert np.allclose(X[b_rows, 1], 0)
+        assert np.allclose(X[b_rows, 2], 1)
+
+    def test_effects_coding_sums_to_zero(self):
+        """Each effects-coded column must sum to zero over a balanced design."""
+        factors = [
+            Factor("Cat", FactorType.CATEGORICAL, ChangeabilityLevel.EASY,
+                   levels=['A', 'B', 'C'])
+        ]
+        # Two replicates of each level -> balanced
+        design = pd.DataFrame({'Cat': ['A', 'B', 'C', 'A', 'B', 'C']})
+
+        X, _ = build_model_matrix(design, factors, ['Cat'])
+
+        # Sum of every effects column should be 0 for a balanced design
+        assert np.allclose(X.sum(axis=0), 0)
+
+    def test_categorical_continuous_interaction(self):
+        """Interaction between categorical (2-level) and continuous expands correctly."""
+        factors = [
+            Factor("A", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1]),
+            Factor("Cat", FactorType.CATEGORICAL, ChangeabilityLevel.EASY,
+                   levels=['X', 'Y']),
+        ]
+        design = pd.DataFrame({
+            'A':   [-1, -1,  1,  1],
+            'Cat': ['X', 'Y', 'X', 'Y'],
+        })
+
+        X, names = build_model_matrix(
+            design, factors, ['1', 'A', 'Cat', 'A*Cat']
+        )
+
+        # Intercept + A + Cat[X] + A*Cat[X]  = 4 columns
+        assert X.shape == (4, 4)
+        assert 'A*Cat[X]' in names
+
+        # Interaction column = A_values * Cat[X] effects column
+        cat_col = X[:, names.index('Cat[X]')]
+        a_col = X[:, names.index('A')]
+        interaction_col = X[:, names.index('A*Cat[X]')]
+        assert np.allclose(interaction_col, a_col * cat_col)
+
+    def test_polynomial_on_categorical_raises(self):
+        """Polynomial terms on categorical factors should raise ValueError."""
+        factors = [
+            Factor("Cat", FactorType.CATEGORICAL, ChangeabilityLevel.EASY,
+                   levels=['A', 'B'])
+        ]
+        design = pd.DataFrame({'Cat': ['A', 'B', 'A', 'B']})
+
+        with pytest.raises(ValueError, match="not valid for categorical"):
+            build_model_matrix(design, factors, ['Cat^2'])
 
 
 # ============================================================

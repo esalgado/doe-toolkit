@@ -3,7 +3,7 @@ Diagnostics display component for ANOVA analysis.
 
 This module handles the display of design diagnostics including:
 - Variance Inflation Factors (VIF)
-- Alias structure for fractional designs
+- Alias and partial-aliasing correlation structure (all design types)
 - Prediction variance statistics
 - Effect significance summaries
 - Detected issues and recommendations
@@ -35,6 +35,10 @@ def display_diagnostics_tab(
     """
     Display the Design Diagnostics tab content.
 
+    Diagnostics are computed automatically the first time this tab is
+    rendered for a given fitted model.  Results are cached in session state
+    so subsequent renders are instant.
+
     Parameters
     ----------
     selected_response : str
@@ -63,15 +67,127 @@ def display_diagnostics_tab(
     """
     st.subheader("📋 Design Diagnostics")
 
-    # Get diagnostics from session state if available
-    if summary and report:
-        _display_computed_diagnostics(
-            selected_response, summary, report, format_term_for_display
-        )
-    else:
-        _display_diagnostics_prompt(
+    # Auto-compute diagnostics if not yet available
+    if not (summary and report):
+        summary, report = _auto_compute_diagnostics(
             design, responses, fitted_models, factors, model_terms_per_response
         )
+
+    if summary and report:
+        _display_computed_diagnostics(
+            selected_response, summary, report, format_term_for_display,
+            factors=factors, design=design
+        )
+    else:
+        st.info(
+            "Fit a model on the Model Fit tab to populate diagnostics."
+        )
+
+
+def _auto_compute_diagnostics(
+    design,
+    responses: Dict,
+    fitted_models: Dict,
+    factors,
+    model_terms_per_response: Dict,
+) -> tuple:
+    """
+    Compute diagnostics automatically and cache in session state.
+
+    Only computes for responses that have a fitted model.  Results are stored
+    under ``st.session_state['diagnostics_summary']`` and
+    ``st.session_state['quality_report']`` so this is a no-op on subsequent
+    renders unless the cached values are invalidated upstream.
+
+    Parameters
+    ----------
+    design : pd.DataFrame
+        Design matrix.
+    responses : Dict
+        Response data keyed by response name.
+    fitted_models : Dict
+        Fitted model results keyed by response name.
+    factors : list
+        Factor definitions.
+    model_terms_per_response : Dict
+        Model terms keyed by response name.
+
+    Returns
+    -------
+    tuple[Optional[DesignDiagnosticSummary], Optional[DesignQualityReport]]
+        Computed summary and report, or (None, None) if no fitted models.
+    """
+    import streamlit as st
+
+    fitted_response_names = [n for n in responses if n in fitted_models]
+    if not fitted_response_names:
+        return None, None
+
+    # Return cached values if they already cover all currently fitted responses
+    cached_summary = st.session_state.get("diagnostics_summary")
+    cached_report = st.session_state.get("quality_report")
+    if cached_summary and cached_report:
+        cached_responses = set(cached_summary.response_diagnostics.keys())
+        if set(fitted_response_names) <= cached_responses:
+            return cached_summary, cached_report
+
+    try:
+        from src.core.diagnostics.summary import (
+            compute_design_diagnostic_summary,
+            generate_quality_report,
+        )
+        from src.core.analysis import generate_model_terms
+
+        # Fill any missing model terms for fitted responses
+        for resp_name in fitted_response_names:
+            if resp_name not in model_terms_per_response:
+                model_terms_per_response[resp_name] = generate_model_terms(
+                    factors, 'linear', include_intercept=True
+                )
+
+        responses_for_diag = {
+            k: v for k, v in responses.items() if k in fitted_response_names
+        }
+
+        design_metadata = {
+            "design_type": st.session_state.get("design_type", "unknown"),
+            "generators": st.session_state.get("design_metadata", {}).get("generators"),
+            "is_split_plot": st.session_state.get("design_metadata", {}).get(
+                "is_split_plot", False
+            ),
+            "has_blocking": "Block" in design.columns,
+            "has_center_points": st.session_state.get("design_metadata", {}).get(
+                "has_center_points", False
+            ),
+        }
+
+        summary = compute_design_diagnostic_summary(
+            design=design,
+            responses=responses_for_diag,
+            fitted_models={
+                k: v.fitted_model
+                for k, v in fitted_models.items()
+                if k in fitted_response_names
+            },
+            factors=factors,
+            model_terms_per_response={
+                k: v
+                for k, v in model_terms_per_response.items()
+                if k in fitted_response_names
+            },
+            design_metadata=design_metadata,
+        )
+
+        report = generate_quality_report(summary)
+
+        st.session_state["diagnostics_summary"] = summary
+        st.session_state["quality_report"] = report
+
+        return summary, report
+
+    except Exception as e:
+        st.warning(f"Could not auto-compute diagnostics: {e}")
+        return None, None
 
 
 def _display_computed_diagnostics(
@@ -79,6 +195,8 @@ def _display_computed_diagnostics(
     summary: DesignDiagnosticSummary,
     report: DesignQualityReport,
     format_term_for_display,
+    factors=None,
+    design=None,
 ) -> None:
     """Display diagnostics when they have been computed."""
     # Get diagnostics for current response
@@ -95,8 +213,12 @@ def _display_computed_diagnostics(
 
         st.divider()
 
-        # Alias Structure (for fractional designs)
-        _display_alias_structure(diag)
+        # Alias / correlation structure (uses fitted model terms)
+        _display_alias_correlation_section(
+            diag,
+            factors if factors is not None else [],
+            design,
+        )
 
         st.divider()
 
@@ -185,7 +307,7 @@ def _display_vif_table(diag, format_term_for_display) -> None:
         if vif_data:
             # Display as standard dataframe
             vif_df = pd.DataFrame(vif_data)
-            st.dataframe(vif_df, use_container_width=True, hide_index=True)
+            st.dataframe(vif_df, width='stretch', hide_index=True)
 
             # Add interpretation
             high_vif = [
@@ -205,46 +327,32 @@ def _display_vif_table(diag, format_term_for_display) -> None:
         st.info("VIF not available (may be saturated design)")
 
 
-def _display_alias_structure(diag) -> None:
-    """Display alias structure for fractional designs."""
-    if diag.resolution is not None:
-        st.markdown("### Alias Structure")
-        st.caption(f"Design Resolution: **{diag.resolution}**")
+def _display_alias_correlation_section(diag, factors, design) -> None:
+    """Display alias and partial-aliasing section using the shared component."""
+    st.markdown("### Alias / Correlation Structure")
 
-        if diag.aliased_effects:
-            st.markdown("**Confounding Patterns:**")
+    model_terms = getattr(diag, 'model_terms', None)
+    if not model_terms or design is None or not factors:
+        st.info("Alias structure not available (model terms or design missing).")
+        return
 
-            # Group by aliasing severity
-            critical_aliases = []
-            other_aliases = []
+    design_type = st.session_state.get('design_type', '')
+    design_metadata = st.session_state.get('design_metadata', {})
 
-            for effect, aliases in diag.aliased_effects.items():
-                if aliases:
-                    alias_str = f"**{effect}** = {' = '.join(aliases)}"
-
-                    # Check if main effect aliased with 2FI (critical)
-                    if len(effect) == 1 and any(len(a) == 2 for a in aliases):
-                        critical_aliases.append(alias_str)
-                    else:
-                        other_aliases.append(alias_str)
-
-            if critical_aliases:
-                st.error("**Critical Confounding (Main effects with 2FI):**")
-                for alias in critical_aliases:
-                    st.markdown(f"- {alias}")
-
-            if other_aliases:
-                with st.expander("View Other Confounding Patterns"):
-                    for alias in other_aliases:
-                        st.markdown(f"- {alias}")
-
-            if diag.resolution <= 3:
-                st.warning(
-                    f"⚠️ Resolution {diag.resolution} design: Main effects are aliased with "
-                    "2-factor interactions. Consider foldover to increase resolution."
-                )
-        else:
-            st.success("✅ No critical aliasing detected")
+    try:
+        from src.ui.components.alias_display import display_alias_correlation
+        display_alias_correlation(
+            design=design,
+            factors=factors,
+            model_terms=model_terms,
+            design_type=design_type,
+            alias_structure=diag.aliased_effects if diag.aliased_effects else None,
+            resolution=diag.resolution,
+            section_title="🔗 Alias / Correlation Structure",
+            expanded=True,
+        )
+    except Exception as e:
+        st.warning(f"Could not render alias/correlation structure: {e}")
 
 
 def _display_prediction_variance(diag) -> None:
@@ -349,59 +457,3 @@ def _display_high_leverage_points(diag) -> None:
         )
 
 
-def _display_diagnostics_prompt(
-    design, responses, fitted_models, factors, model_terms_per_response
-) -> None:
-    """Display prompt to generate diagnostics."""
-    st.info(
-        "💡 Click to generate comprehensive design diagnostics including VIF, alias structure, prediction variance, and quality assessment."
-    )
-
-    if st.button("Generate Diagnostics", type="primary"):
-        with st.spinner("Computing diagnostics..."):
-            try:
-                from src.core.diagnostics.summary import (
-                    compute_design_diagnostic_summary,
-                    generate_quality_report,
-                )
-
-                # Prepare metadata
-                design_metadata = {
-                    "design_type": st.session_state.get("design_type", "unknown"),
-                    "generators": st.session_state.get("design_metadata", {}).get(
-                        "generators"
-                    ),
-                    "is_split_plot": st.session_state.get("design_metadata", {}).get(
-                        "is_split_plot", False
-                    ),
-                    "has_blocking": "Block" in design.columns,
-                    "has_center_points": st.session_state.get(
-                        "design_metadata", {}
-                    ).get("has_center_points", False),
-                }
-
-                # Compute diagnostics
-                summary = compute_design_diagnostic_summary(
-                    design=design,
-                    responses=responses,
-                    fitted_models={
-                        k: v.fitted_model for k, v in fitted_models.items()
-                    },
-                    factors=factors,
-                    model_terms_per_response=model_terms_per_response,
-                    design_metadata=design_metadata,
-                )
-
-                # Generate quality report
-                report = generate_quality_report(summary)
-
-                # Save to session state
-                st.session_state["diagnostics_summary"] = summary
-                st.session_state["quality_report"] = report
-
-                st.success("✅ Diagnostics computed successfully!")
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"Failed to compute diagnostics: {e}")
-                st.exception(e)

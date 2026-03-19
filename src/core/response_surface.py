@@ -12,6 +12,7 @@ import itertools
 import warnings
 
 from src.core.factors import Factor, FactorType
+from src.core.coding import decode_design as _decode_design
 
 
 class ResponseSurfaceDesign:
@@ -285,9 +286,14 @@ class CentralCompositeDesign(ResponseSurfaceDesign):
         
         # Add run order
         design_matrix.insert(1, 'RunOrder', range(1, len(design_matrix) + 1))
-        
+
+        # Decode continuous factors from coded space to natural units.
+        # CCD is inherently generated in coded space; natural units are
+        # required by all downstream consumers.
+        design_matrix = _decode_design(design_matrix, self.factors)
+
         return design_matrix
-    
+
     def _generate_factorial_points(self) -> pd.DataFrame:
         """Generate factorial portion of design."""
         factor_names = [f.name for f in self.factors]
@@ -517,9 +523,14 @@ class BoxBehnkenDesign(ResponseSurfaceDesign):
         
         # Add run order
         design_matrix.insert(1, 'RunOrder', range(1, len(design_matrix) + 1))
-        
+
+        # Decode continuous factors from coded space to natural units.
+        # BBD is inherently generated in coded space; natural units are
+        # required by all downstream consumers.
+        design_matrix = _decode_design(design_matrix, self.factors)
+
         return design_matrix
-    
+
     def _generate_factorial_points(self) -> pd.DataFrame:
         """
         Generate Box-Behnken factorial points.

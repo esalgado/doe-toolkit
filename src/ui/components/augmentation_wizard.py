@@ -1,9 +1,10 @@
 """
 Augmentation wizard components for Streamlit UI.
 
-Implements dual-mode augmentation workflow:
-- Mode A: Fix Issues (diagnostics-driven, automatic)
-- Mode B: Enhance Design (user-intent driven, goal-based)
+Workflow:
+1. Display plain-text diagnostic summary (issues + recommendations).
+2. Flat augmentation type selection menu.
+3. Plan display and execution.
 """
 import streamlit as st
 import pandas as pd
@@ -15,189 +16,163 @@ from src.core.augmentation import (
     AugmentationRequest,
     AugmentationGoal,
     recommend_augmentation,
-    get_mode_availability,
-    get_mode_recommendations,
-    get_available_enhancement_goals,
+    get_available_augmentation_types,
     create_plan_comparison_table
 )
 from src.core.diagnostics import DesignDiagnosticSummary
 
 
-def display_mode_selection(
+def display_diagnostic_summary(
     diagnostics: DesignDiagnosticSummary
-) -> Optional[str]:
+) -> None:
     """
-    Display mode selection interface.
-    
+    Display a plain-text summary of current design issues and recommendations.
+
+    Replaces the former Mode A interactive workflow.  Issues are surfaced
+    as inline callouts so the user understands the context before choosing
+    an augmentation type below.
+
     Parameters
     ----------
     diagnostics : DesignDiagnosticSummary
-        Current design diagnostics
-    
+        Current design diagnostics.
+    """
+    st.subheader("📋 Design Diagnostic Summary")
+
+    any_issues = (
+        diagnostics.has_aliasing
+        or diagnostics.has_high_vif
+        or diagnostics.has_lack_of_fit
+        or diagnostics.has_rank_deficiency
+        or diagnostics.has_insufficient_replication
+    )
+
+    if not any_issues:
+        st.success(
+            "✅ **No critical issues detected.** Your design appears statistically sound. "
+            "You may still augment below to improve precision or add curvature detection."
+        )
+        return
+
+    st.markdown(
+        "The following issues were detected in your current design. "
+        "Select an augmentation type below to address them."
+    )
+
+    if diagnostics.has_rank_deficiency:
+        st.error(
+            "❌ **Rank deficiency** — The design matrix is singular and the model "
+            "cannot be estimated. Add runs or remove collinear factors. "
+            "**Recommended:** D-Optimal augmentation."
+        )
+
+    if diagnostics.has_aliasing:
+        st.warning(
+            "⚠️ **Aliasing** — Some effects are confounded and cannot be separated "
+            "from one another. **Recommended:** Foldover augmentation to de-alias "
+            "main effects, or D-Optimal augmentation to break specific aliases."
+        )
+
+    if diagnostics.has_high_vif:
+        st.warning(
+            "⚠️ **High multicollinearity (VIF)** — Correlated factors reduce "
+            "statistical power and inflate coefficient uncertainty. "
+            "**Recommended:** D-Optimal augmentation to improve orthogonality."
+        )
+
+    if diagnostics.has_lack_of_fit:
+        st.warning(
+            "⚠️ **Lack of fit** — The current model does not adequately explain "
+            "the response surface. Curvature may be present. "
+            "**Recommended:** Add axial points (CCD) or use I-Optimal augmentation "
+            "to extend to a response surface model."
+        )
+
+    if diagnostics.has_insufficient_replication:
+        st.warning(
+            "⚠️ **Insufficient replication** — Pure error cannot be reliably "
+            "estimated without replicated runs. "
+            "**Recommended:** Add replicate runs at existing design points."
+        )
+
+
+def display_type_selection(
+    diagnostics: DesignDiagnosticSummary,
+) -> Optional[str]:
+    """
+    Display a flat list of augmentation types for Mode B direct selection.
+
+    Eligible types are shown with a select button.  Ineligible types are
+    shown greyed-out with a short explanation of why they are locked.
+
+    Parameters
+    ----------
+    diagnostics : DesignDiagnosticSummary
+        Current design diagnostics used to determine eligibility.
+
     Returns
     -------
     str or None
-        Selected mode ('fix_issues' or 'enhance_design'), or None if no selection
+        The selected augmentation type key (e.g. 'foldover'), or None if
+        the user has not yet made a selection.
     """
-    
-    st.header("🔬 Design Augmentation")
-    
-    # Get mode availability and recommendations
-    availability = get_mode_availability(diagnostics)
-    recommendations = get_mode_recommendations(diagnostics)
-    
-    st.markdown("""
-    Choose how you want to augment your design:
-    
-    - **Mode A: Fix Issues** — Automatic recommendations to address detected problems
-    - **Mode B: Enhance Design** — Select a goal and get strategies to achieve it
-    """)
-    
+    st.subheader("🔬 Choose an Augmentation Type")
+    st.markdown(
+        "Select the type of augmentation you want to add. "
+        "Options that are not applicable to your current design are shown greyed out."
+    )
     st.divider()
-    
-    # Mode A: Fix Issues
-    with st.expander(
-        "🔧 **Mode A: Fix Issues** (Diagnostics-Driven)",
-        expanded=availability['fix_issues']
-    ):
-        st.markdown(recommendations['fix_issues'])
-        
-        if availability['fix_issues']:
-            # Show specific warnings detected
-            st.markdown("**Detected Issues:**")
-            
-            if diagnostics.has_aliasing:
-                st.warning("⚠️ **Aliasing detected** - Some effects are confounded and cannot be separated")
-            
-            if diagnostics.has_high_vif:
-                st.warning("⚠️ **High VIF detected** - Multicollinearity between factors reduces statistical power")
-            
-            if diagnostics.has_lack_of_fit:
-                st.warning("⚠️ **Lack of fit detected** - Current model doesn't adequately explain the data")
-            
-            if diagnostics.has_rank_deficiency:
-                st.error("❌ **Rank deficiency** - Design matrix is singular, model cannot be estimated")
-            
-            if diagnostics.has_insufficient_replication:
-                st.warning("⚠️ **Insufficient replication** - Cannot reliably estimate pure error")
-            
-            st.divider()
-            
-            st.markdown("""
-            **This mode will:**
-            - Provide targeted augmentations to fix each issue above
-            - Prioritize fixes by severity and impact
-            - Show expected improvements after augmentation
-            
-            **Best for:** Addressing specific statistical problems before proceeding
-            """)
-            
-            if st.button(
-                "🔧 Fix Detected Issues",
-                type="primary",
-                use_container_width=True,
-                key="mode_a_button"
-            ):
-                return 'fix_issues'
-        else:
-            st.success(
-                "✅ **No critical issues detected.**\n\n"
-                "Your design appears statistically sound. "
-                "You can proceed to optimization, or use Mode B to enhance design capabilities "
-                "(e.g., add curvature detection, improve prediction precision, increase robustness)."
-            )
-    
-    # Mode B: Enhance Design
-    with st.expander(
-        "🎯 **Mode B: Enhance Design** (Goal-Driven)",
-        expanded=not availability['fix_issues']
-    ):
-        st.markdown(recommendations['enhance_design'])
-        
-        st.markdown("""
-        **This mode will:**
-        - Let you select a high-level engineering goal
-        - Recommend strategies to accomplish that goal
-        - Use diagnostics to inform (not dictate) the augmentation
-        - Allow you to adjust parameters before executing
-        
-        **Best for:** Proactively improving design capabilities
-        """)
-        
-        if st.button(
-            "🎯 Select Enhancement Goal",
-            type="primary" if not availability['fix_issues'] else "secondary",
-            use_container_width=True,
-            key="mode_b_button"
-        ):
-            return 'enhance_design'
-    
-    return None
 
+    aug_types = get_available_augmentation_types(diagnostics)
+    selected_type: Optional[str] = None
 
-def display_goal_selection(
-    diagnostics: DesignDiagnosticSummary
-) -> Optional[AugmentationGoal]:
-    """
-    Display goal selection interface for Mode B.
-    
-    Parameters
-    ----------
-    diagnostics : DesignDiagnosticSummary
-        Current design diagnostics
-    
-    Returns
-    -------
-    AugmentationGoal or None
-        Selected goal, or None if no selection
-    """
-    
-    st.subheader("🎯 Select Your Enhancement Goal")
-    
-    st.markdown("""
-    Choose what you want to accomplish with this augmentation. 
-    Select the goal that best matches your engineering intent.
-    """)
-    
-    # Get available goals
-    available_goals = get_available_enhancement_goals(diagnostics)
-    
-    if not available_goals:
-        st.warning("No enhancement goals available for this design type.")
-        return None
-    
-    # Display goals as cards
-    selected_goal = None
-    
-    for goal_info in available_goals:
+    for entry in aug_types:
+        eligible: bool = entry['eligible']
+        lock_reason: Optional[str] = entry['lock_reason']
+
         with st.container():
-            col1, col2 = st.columns([4, 1])
-            
-            with col1:
-                st.markdown(f"### {goal_info['title']}")
-                
-                # Show diagnostic alignment if present
-                if goal_info['diagnostic_alignment']:
-                    st.markdown(goal_info['diagnostic_alignment'])
-                
-                st.markdown(f"**Description:** {goal_info['description']}")
-                
-                with st.expander("ℹ️ More Details"):
-                    st.markdown(f"**When to use:** {goal_info['when_appropriate']}")
-                    st.markdown(f"**Example:** {goal_info['example_scenario']}")
-                    st.markdown(f"**Typical strategies:** {goal_info['typical_strategies']}")
-            
-            with col2:
-                if st.button(
-                    "Select",
-                    key=f"select_goal_{goal_info['goal']}",
-                    use_container_width=True
-                ):
-                    selected_goal = AugmentationGoal(goal_info['goal'])
-            
+            col_text, col_btn = st.columns([5, 1])
+
+            with col_text:
+                if eligible:
+                    st.markdown(f"### {entry['label']}")
+                else:
+                    # Visual de-emphasis for locked options
+                    st.markdown(
+                        f"<span style='color:#888; font-size:1.1rem;'>"
+                        f"<strong>🔒 {entry['label']}</strong></span>",
+                        unsafe_allow_html=True,
+                    )
+
+                st.markdown(entry['description'])
+
+                with st.expander("ℹ️ Details", expanded=False):
+                    st.markdown(f"**When to use:** {entry['when_to_use']}")
+                    st.markdown(f"**Typical runs added:** {entry['typical_runs']}")
+                    if lock_reason:
+                        st.info(f"🔒 **Not available:** {lock_reason}")
+
+            with col_btn:
+                if eligible:
+                    if st.button(
+                        "Select",
+                        key=f"select_type_{entry['type']}",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        selected_type = entry['type']
+                else:
+                    st.button(
+                        "Locked",
+                        key=f"locked_type_{entry['type']}",
+                        disabled=True,
+                        use_container_width=True,
+                        help=lock_reason or "Not available for this design.",
+                    )
+
             st.divider()
-    
-    return selected_goal
+
+    return selected_type
 
 
 def display_augmentation_plans(
@@ -215,18 +190,11 @@ def display_augmentation_plans(
         Mode that generated these plans ('fix_issues' or 'enhance_design')
     """
     
-    if mode == 'fix_issues':
-        st.header("🔧 Recommended Fixes")
-        intro = (
-            "Based on diagnostic analysis, here are targeted augmentations "
-            "to address detected issues, ranked by priority:"
-        )
-    else:
-        st.header("🎯 Recommended Strategies")
-        intro = (
-            "Here are strategies to accomplish your selected goal, "
-            "ranked by effectiveness:"
-        )
+    st.header("🔧 Augmentation Plans")
+    intro = (
+        "Here are plans for the selected augmentation type, "
+        "ordered by number of runs added:"
+    )
     
     st.markdown(intro)
     
@@ -239,7 +207,7 @@ def display_augmentation_plans(
         comparison = create_plan_comparison_table(plans)
         st.dataframe(
             pd.DataFrame(comparison),
-            use_container_width=True,
+            width='stretch',
             hide_index=True
         )
     
@@ -265,11 +233,11 @@ def _display_single_plan(
     
     # Expander title
     title = f"**Plan {rank}: {plan.plan_name}**"
-    if is_primary and mode == 'enhance_design':
+    if is_primary:
         title += " (Recommended)"
     
     with st.expander(
-        f"{title} — Utility: {plan.utility_score:.0f}/100, +{plan.n_runs_to_add} runs",
+        f"{title} — +{plan.n_runs_to_add} runs",
         expanded=(rank == 1)
     ):
         # Strategy overview
@@ -285,8 +253,8 @@ def _display_single_plan(
             st.markdown(f"**Total runs after:** {plan.total_runs_after}")
         
         with col2:
-            st.metric("Utility Score", f"{plan.utility_score:.0f}/100")
-            st.metric("Experimental Cost", f"{plan.experimental_cost:.0f} runs")
+            st.metric("Runs Added", plan.n_runs_to_add)
+            st.metric("Total After", plan.total_runs_after)
         
         # Expected improvements
         if plan.expected_improvements:
@@ -309,29 +277,35 @@ def _display_single_plan(
                 for suggestion in diagnostic_suggestions:
                     st.info(suggestion)
         
-        # Parameter adjustment (future feature)
+        # Parameter adjustment
         with st.expander("⚙️ Adjust Parameters (Advanced)", expanded=False):
             st.markdown("**Customize this plan:**")
-            
-            # Run count adjustment
-            adjusted_runs = st.number_input(
-                "Number of runs to add",
-                min_value=1,
-                max_value=plan.n_runs_to_add * 3,
-                value=plan.n_runs_to_add,
-                key=f"adjust_runs_{plan.plan_id}"
-            )
-            
-            if adjusted_runs != plan.n_runs_to_add:
-                st.info(f"Adjusted to {adjusted_runs} runs (original: {plan.n_runs_to_add})")
-                # TODO: Update plan with new run count
-            
-            # Strategy-specific adjustments
+
+            # Foldover run count is fixed (always doubles the design)
             if plan.strategy == 'foldover':
+                st.markdown(f"**Runs to add:** {plan.n_runs_to_add} (fixed for foldover)")
                 config = plan.strategy_config
                 if config.foldover_type == 'single_factor':
                     st.markdown(f"**Foldover factor:** {config.factor_to_fold}")
-                    # TODO: Allow changing the factor
+            else:
+                # Run count adjustment — writes back into the plan immediately
+                adjusted_runs = st.number_input(
+                    "Number of runs to add",
+                    min_value=1,
+                    max_value=plan.n_runs_to_add * 5,
+                    value=plan.n_runs_to_add,
+                    key=f"adjust_runs_{plan.plan_id}"
+                )
+
+                if adjusted_runs != plan.n_runs_to_add:
+                    # Mutate plan in place so the Select button picks up the change
+                    plan.n_runs_to_add = adjusted_runs
+                    plan.total_runs_after = len(plan.original_design) + adjusted_runs
+                    plan.experimental_cost = float(adjusted_runs)
+                    # Keep config in sync for strategies that store it there
+                    if hasattr(plan.strategy_config, 'n_runs_to_add'):
+                        plan.strategy_config.n_runs_to_add = adjusted_runs
+                    st.info(f"Will add {adjusted_runs} runs (click Select to confirm)")
         
         # Selection button
         col1, col2 = st.columns([3, 1])
@@ -341,7 +315,7 @@ def _display_single_plan(
                 f"Select Plan {rank}",
                 key=f"select_plan_{plan.plan_id}",
                 type="primary" if rank == 1 else "secondary",
-                use_container_width=True
+                width='stretch'
             ):
                 st.session_state['selected_augmentation_plan'] = plan
                 st.rerun()
@@ -384,6 +358,7 @@ def display_plan_execution(plan: AugmentationPlan) -> None:
             
             # Success - store in session state
             st.session_state['augmented_design'] = augmented
+            st.session_state['augmentation_results_displayed'] = True
             st.success(f"✅ Successfully added {augmented.n_runs_added} runs")
             
             # Display results
@@ -432,7 +407,7 @@ def _display_augmented_design(augmented: AugmentedDesign) -> None:
         )
         st.dataframe(
             augmented.combined_design,
-            use_container_width=True,
+            width='stretch',
             hide_index=True
         )
         
@@ -453,7 +428,7 @@ def _display_augmented_design(augmented: AugmentedDesign) -> None:
         )
         st.dataframe(
             augmented.new_runs_only,
-            use_container_width=True,
+            width='stretch',
             hide_index=True
         )
         

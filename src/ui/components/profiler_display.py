@@ -14,12 +14,11 @@ Designed to mimic JMP-style prediction profiler functionality.
 from typing import Dict
 
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.ui.utils.plotting import PLOT_COLORS, apply_plot_style
-from src.core.coding import encode_settings_dict, is_design_coded
+from src.ui.utils.plotting import PLOT_COLORS, apply_plot_style, _label_with_units
+from src.core.coding import encode_settings_dict
 
 
 def display_profiler_tab(
@@ -27,6 +26,7 @@ def display_profiler_tab(
     results,
     factors,
     format_term_for_display,
+    response_units: str = None,
 ) -> None:
     """
     Display the Prediction Profiler tab content.
@@ -41,6 +41,8 @@ def display_profiler_tab(
         List of Factor objects
     format_term_for_display : callable
         Function to format term names for display
+    response_units : str, optional
+        Units for the response (e.g., "kg"). If None, no units shown.
 
     Returns
     -------
@@ -69,12 +71,14 @@ def display_profiler_tab(
     current_prediction = _compute_prediction(results, factor_settings, factors)
 
     # Display current prediction
-    st.markdown(f"### Predicted {selected_response}: **{current_prediction:.4f}**")
+    pred_label = _label_with_units(selected_response, response_units)
+    st.markdown(f"### Predicted {pred_label}: **{current_prediction:.4f}**")
     st.divider()
 
     # Display profiler plots grid
     _display_profiler_grid(
-        factors, factor_settings, results, selected_response, current_prediction
+        factors, factor_settings, results, selected_response, current_prediction,
+        response_units=response_units,
     )
 
     st.divider()
@@ -83,11 +87,13 @@ def display_profiler_tab(
     continuous_factors = [f for f in factors if f.is_continuous()]
     if len(continuous_factors) >= 2:
         _display_contour_plots(
-            factors, continuous_factors, results, selected_response
+            factors, continuous_factors, results, selected_response,
+            response_units=response_units,
         )
         st.divider()
         _display_3d_surface(
-            factors, continuous_factors, results, selected_response
+            factors, continuous_factors, results, selected_response,
+            response_units=response_units,
         )
     else:
         st.info("Contour and 3D plots require at least 2 continuous factors.")
@@ -115,25 +121,16 @@ def _initialize_profiler_settings(factors) -> None:
 def _compute_prediction(results, factor_settings: Dict, factors) -> float:
     """Compute prediction for given factor settings."""
     try:
-        # Encode settings from actual to coded values before predicting
         encoded_settings = encode_settings_dict(factor_settings, factors)
-        
-        pred_df = pd.DataFrame([encoded_settings])
-        prediction = results.fitted_model.predict(pred_df)[0]
-        
-        # Debug output to diagnose scaling issues
-        print(f"DEBUG[_compute_prediction]: factor_settings (actual) = {factor_settings}")
-        print(f"DEBUG[_compute_prediction]: encoded_settings (coded) = {encoded_settings}")
-        print(f"DEBUG[_compute_prediction]: prediction = {prediction}")
-        
-        return prediction
+        return results.predict_from_settings(encoded_settings)
     except Exception as e:
         st.error(f"Could not compute prediction: {e}")
         return 0.0
 
 
 def _display_profiler_grid(
-    factors, factor_settings, results, selected_response, current_prediction
+    factors, factor_settings, results, selected_response, current_prediction,
+    response_units=None,
 ) -> None:
     """Display grid of profiler plots."""
     n_factors = len(factors)
@@ -152,7 +149,8 @@ def _display_profiler_grid(
             factor = factors[factor_idx]
 
             with cols[col_idx]:
-                st.markdown(f"**{factor.name}**")
+                factor_header = _label_with_units(factor.name, factor.units)
+                st.markdown(f"**{factor_header}**")
 
                 if factor.is_continuous():
                     _display_continuous_factor(
@@ -163,6 +161,7 @@ def _display_profiler_grid(
                         current_prediction,
                         col_idx,
                         factors,
+                        response_units=response_units,
                     )
                 else:
                     _display_categorical_factor(
@@ -172,11 +171,13 @@ def _display_profiler_grid(
                         selected_response,
                         col_idx,
                         factors,
+                        response_units=response_units,
                     )
 
 
 def _display_continuous_factor(
-    factor, factor_settings, results, selected_response, current_prediction, col_idx, factors
+    factor, factor_settings, results, selected_response, current_prediction, col_idx, factors,
+    response_units=None,
 ) -> None:
     """Display response trace plot for continuous factor."""
     min_val, max_val = factor.levels
@@ -186,30 +187,15 @@ def _display_continuous_factor(
     factor_range = np.linspace(min_val, max_val, trace_points)
 
     trace_predictions = []
-    trace_data = []
     for val in factor_range:
         point = factor_settings.copy()
         point[factor.name] = val
-        trace_data.append(point)
-        # Encode to coded values before predicting
         encoded_point = encode_settings_dict(point, factors)
-        point_df = pd.DataFrame([encoded_point])
-        pred = results.fitted_model.predict(point_df)[0]
-        trace_predictions.append(pred)
+        trace_predictions.append(results.predict_from_settings(encoded_point))
 
-    # Calculate 95% CI
-    trace_df = pd.DataFrame(trace_data)
-    try:
-        # Encode trace data for CI calculation
-        from src.core.coding import encode_design
-        trace_df_encoded = encode_design(trace_df, factors)
-        pred_obj = results.fitted_model.get_prediction(trace_df_encoded)
-        pred_summary = pred_obj.summary_frame(alpha=0.05)
-        ci_lower = pred_summary["mean_ci_lower"].values
-        ci_upper = pred_summary["mean_ci_upper"].values
-    except Exception:
-        ci_lower = None
-        ci_upper = None
+    # CI not available without patsy model; skip silently
+    ci_lower = None
+    ci_upper = None
 
     # Create plot
     fig = go.Figure()
@@ -266,11 +252,12 @@ def _display_continuous_factor(
         )
     )
 
+    response_label = _label_with_units(selected_response, response_units)
     fig.update_layout(
         height=200,
         margin=dict(l=40, r=10, t=20, b=40),
         xaxis_title=None,
-        yaxis_title=selected_response if col_idx == 0 else None,
+        yaxis_title=response_label if col_idx == 0 else None,
         showlegend=False,
     )
 
@@ -302,7 +289,8 @@ def _display_continuous_factor(
 
 
 def _display_categorical_factor(
-    factor, factor_settings, results, selected_response, col_idx, factors
+    factor, factor_settings, results, selected_response, col_idx, factors,
+    response_units=None,
 ) -> None:
     """Display bar chart for categorical/discrete factor."""
     # Generate predictions for each level
@@ -310,11 +298,8 @@ def _display_categorical_factor(
     for level in factor.levels:
         point = factor_settings.copy()
         point[factor.name] = level
-        # Encode to coded values before predicting
         encoded_point = encode_settings_dict(point, factors)
-        point_df = pd.DataFrame([encoded_point])
-        pred = results.fitted_model.predict(point_df)[0]
-        level_predictions.append(pred)
+        level_predictions.append(results.predict_from_settings(encoded_point))
 
     # Determine which bar is current
     current_level = factor_settings[factor.name]
@@ -338,11 +323,12 @@ def _display_categorical_factor(
         )
     )
 
+    response_label = _label_with_units(selected_response, response_units)
     fig.update_layout(
         height=200,
         margin=dict(l=40, r=10, t=20, b=40),
         xaxis_title=None,
-        yaxis_title=selected_response if col_idx == 0 else None,
+        yaxis_title=response_label if col_idx == 0 else None,
         showlegend=False,
     )
 
@@ -365,7 +351,7 @@ def _display_categorical_factor(
 
 
 def _display_contour_plots(
-    factors, continuous_factors, results, selected_response
+    factors, continuous_factors, results, selected_response, response_units=None,
 ) -> None:
     """Display 2D contour plots."""
     st.markdown("### 🗺️ Contour Plots")
@@ -419,8 +405,14 @@ def _display_contour_plots(
         )
 
         if Z_mesh is not None:
+            # Build factor unit lookups for contour axis labels
+            _factor_map = {f.name: f for f in factors}
+            x_factor_units = _factor_map[x_factor].units if x_factor in _factor_map else None
+            y_factor_units = _factor_map[y_factor].units if y_factor in _factor_map else None
             _plot_contour(
-                x_grid, y_grid, Z_mesh, x_factor, y_factor, selected_response
+                x_grid, y_grid, Z_mesh, x_factor, y_factor, selected_response,
+                x_factor_units=x_factor_units, y_factor_units=y_factor_units,
+                response_units=response_units,
             )
 
             # Store mesh for 3D plot
@@ -501,14 +493,11 @@ def _generate_contour_mesh(factors, x_factor, y_factor, results):
                 point[y_factor] = Y_mesh[j, i]
                 grid_points.append(point)
 
-        grid_df = pd.DataFrame(grid_points)
-        
-        # Encode to coded values before predicting
-        from src.core.coding import encode_design
-        grid_df_encoded = encode_design(grid_df, factors)
-
-        # Predict on grid
-        Z_pred = results.fitted_model.predict(grid_df_encoded)
+        # Predict on grid using coefficient-based predictor (patsy-free)
+        Z_pred = [
+            results.predict_from_settings(encode_settings_dict(pt, factors))
+            for pt in grid_points
+        ]
         Z_mesh = np.array(Z_pred).reshape(X_mesh.shape)
 
         return Z_mesh, x_grid, y_grid
@@ -518,8 +507,15 @@ def _generate_contour_mesh(factors, x_factor, y_factor, results):
         return None, None, None
 
 
-def _plot_contour(x_grid, y_grid, Z_mesh, x_factor, y_factor, selected_response):
+def _plot_contour(
+    x_grid, y_grid, Z_mesh, x_factor, y_factor, selected_response,
+    x_factor_units=None, y_factor_units=None, response_units=None,
+):
     """Plot 2D contour."""
+    x_label = _label_with_units(x_factor, x_factor_units)
+    y_label = _label_with_units(y_factor, y_factor_units)
+    response_label = _label_with_units(selected_response, response_units)
+
     fig = go.Figure()
 
     fig.add_trace(
@@ -528,22 +524,22 @@ def _plot_contour(x_grid, y_grid, Z_mesh, x_factor, y_factor, selected_response)
             y=y_grid,
             z=Z_mesh,
             colorscale="RdYlGn",
-            colorbar=dict(title=selected_response),
+            colorbar=dict(title=response_label),
             contours=dict(
                 coloring="heatmap",
                 showlabels=True,
                 labelfont=dict(size=10, color="white"),
             ),
             hovertemplate=(
-                f"{x_factor}: %{{x:.2f}}<br>"
-                f"{y_factor}: %{{y:.2f}}<br>"
-                f"{selected_response}: %{{z:.2f}}<extra></extra>"
+                f"{x_label}: %{{x:.2f}}<br>"
+                f"{y_label}: %{{y:.2f}}<br>"
+                f"{response_label}: %{{z:.2f}}<extra></extra>"
             ),
         )
     )
 
     fig.update_layout(
-        xaxis_title=x_factor, yaxis_title=y_factor, height=500, showlegend=True
+        xaxis_title=x_label, yaxis_title=y_label, height=500, showlegend=True
     )
 
     fig = apply_plot_style(fig)
@@ -551,7 +547,7 @@ def _plot_contour(x_grid, y_grid, Z_mesh, x_factor, y_factor, selected_response)
 
 
 def _display_3d_surface(
-    factors, continuous_factors, results, selected_response
+    factors, continuous_factors, results, selected_response, response_units=None,
 ) -> None:
     """Display 3D response surface plot."""
     st.markdown("### 🏔️ 3D Response Surface")
@@ -570,6 +566,15 @@ def _display_3d_surface(
 
     if x_factor and y_factor and Z_mesh is not None:
         try:
+            _factor_map = {f.name: f for f in factors}
+            x_label = _label_with_units(
+                x_factor, _factor_map[x_factor].units if x_factor in _factor_map else None
+            )
+            y_label = _label_with_units(
+                y_factor, _factor_map[y_factor].units if y_factor in _factor_map else None
+            )
+            response_label = _label_with_units(selected_response, response_units)
+
             fig_3d = go.Figure()
 
             fig_3d.add_trace(
@@ -578,20 +583,20 @@ def _display_3d_surface(
                     y=y_grid,
                     z=Z_mesh,
                     colorscale="RdYlGn",
-                    colorbar=dict(title=selected_response),
+                    colorbar=dict(title=response_label),
                     hovertemplate=(
-                        f"{x_factor}: %{{x:.2f}}<br>"
-                        f"{y_factor}: %{{y:.2f}}<br>"
-                        f"{selected_response}: %{{z:.2f}}<extra></extra>"
+                        f"{x_label}: %{{x:.2f}}<br>"
+                        f"{y_label}: %{{y:.2f}}<br>"
+                        f"{response_label}: %{{z:.2f}}<extra></extra>"
                     ),
                 )
             )
 
             fig_3d.update_layout(
                 scene=dict(
-                    xaxis_title=x_factor,
-                    yaxis_title=y_factor,
-                    zaxis_title=selected_response,
+                    xaxis_title=x_label,
+                    yaxis_title=y_label,
+                    zaxis_title=response_label,
                     camera=dict(eye=dict(x=1.5, y=1.5, z=1.3)),
                 ),
                 height=600,

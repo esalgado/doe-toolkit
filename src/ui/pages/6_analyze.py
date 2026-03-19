@@ -30,13 +30,97 @@ from src.ui.utils.plotting import (
     create_residual_plot,
     create_logworth_plot,
     create_qq_plot,
-    create_half_normal_plot
+    create_half_normal_plot,
+    _label_with_units,
 )
 from src.ui.components.model_builder import display_model_builder, format_term_for_display, display_stepwise_button
 from src.ui.components.diagnostics_display import display_diagnostics_tab
 from src.ui.components.lof_testing import display_lack_of_fit_test
 from src.ui.components.profiler_display import display_profiler_tab
 from src.core.analysis import ANOVAAnalysis, generate_model_terms  # noqa: E402
+
+
+# ==================== HELPER FUNCTIONS ====================
+
+def _display_anova_table(anova_table: pd.DataFrame) -> None:
+    """
+    Render the ANOVA table with split-plot-aware formatting.
+
+    For split-plot designs (detected by the presence of a 'Stratum' column),
+    the table is split into two clearly labelled sections — Whole-Plot stratum
+    and Sub-Plot stratum — with a variance component ratio and diagnostic
+    warning between them.  For non-split-plot designs the table is shown as a
+    plain dataframe.
+    """
+    if 'Stratum' not in anova_table.columns:
+        st.dataframe(anova_table, width='stretch')
+        return
+
+    display_cols = [c for c in anova_table.columns if c != 'Stratum']
+
+    wp_rows = anova_table[anova_table['Stratum'] == 'Whole-Plot']
+    sp_rows = anova_table[anova_table['Stratum'] == 'Sub-Plot']
+
+    # --- Variance component ratio ---
+    ms_wp_error = np.nan
+    ms_sp_error = np.nan
+    if 'WholePlot Error' in wp_rows.index and 'MS' in wp_rows.columns:
+        ms_wp_error = float(wp_rows.loc['WholePlot Error', 'MS'])
+    if 'SubPlot Error' in sp_rows.index and 'MS' in sp_rows.columns:
+        ms_sp_error = float(sp_rows.loc['SubPlot Error', 'MS'])
+
+    # --- Whole-Plot stratum ---
+    st.markdown(
+        '<div style="background:#1e3a5f;color:#a8c8f0;padding:4px 10px;'
+        'border-radius:4px;font-weight:600;font-size:0.85rem;margin-bottom:2px;">'
+        '▶ Whole-Plot Stratum (Hard Factors — tested vs Whole-Plot Error)'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    st.dataframe(wp_rows[display_cols], width='stretch')
+
+    # --- Variance component diagnostic ---
+    if not np.isnan(ms_wp_error) and not np.isnan(ms_sp_error) and ms_sp_error > 0:
+        ratio = ms_wp_error / ms_sp_error
+        ratio_pct = ms_wp_error / (ms_wp_error + ms_sp_error) * 100
+
+        if ratio > 10:
+            icon, colour = '🔴', '#5c1a1a'
+            severity = f'**High** ({ratio:.1f}×) — whole-plot noise dominates. Hard-factor tests have low power; consider adding whole-plot replicates.'
+        elif ratio > 3:
+            icon, colour = '🟡', '#4a3800'
+            severity = f'**Moderate** ({ratio:.1f}×) — noticeable whole-plot variation. Interpret hard-factor p-values with caution.'
+        else:
+            icon, colour = '🟢', '#0d3320'
+            severity = f'**Low** ({ratio:.1f}×) — whole-plot and sub-plot error are comparable.'
+
+        st.markdown(
+            f'<div style="background:{colour};padding:8px 12px;border-radius:4px;'
+            f'margin:4px 0;font-size:0.85rem;">'
+            f'{icon} <b>Variance component ratio</b> — '
+            f'MS(WP Error) / MS(SP Error) = {ratio:.2f} '
+            f'({ratio_pct:.0f}% of variance is whole-plot noise). {severity}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div style="background:#1a1a2e;padding:6px 12px;border-radius:4px;'
+            'margin:4px 0;font-size:0.82rem;color:#9090b0;">'
+            'ℹ️ Variance component ratio not available (check degrees of freedom).'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    # --- Sub-Plot stratum ---
+    st.markdown(
+        '<div style="background:#1a3d1a;color:#a0d4a0;padding:4px 10px;'
+        'border-radius:4px;font-weight:600;font-size:0.85rem;margin-bottom:2px;">'
+        '▶ Sub-Plot Stratum (Easy Factors & Cross-Strata Interactions — tested vs Sub-Plot Error)'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    st.dataframe(sp_rows[display_cols], width='stretch')
 
 
 # ==================== MAIN APP ====================
@@ -81,7 +165,7 @@ if not responses or not response_names:
         
         # Show design table
         st.subheader("📋 Design Matrix")
-        st.dataframe(design, use_container_width=True)
+        st.dataframe(design, width='stretch')
         
         # Show factor summary
         st.subheader("📊 Factor Summary")
@@ -101,17 +185,17 @@ if not responses or not response_names:
                 'Units': factor.units or ''
             })
         
-        st.dataframe(pd.DataFrame(factor_summary), use_container_width=True)
+        st.dataframe(pd.DataFrame(factor_summary), width='stretch')
         
         st.divider()
         
         # Navigation
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("← Back to Import", use_container_width=True, type="primary"):
+            if st.button("← Back to Import", width='stretch', type="primary"):
                 st.switch_page("pages/5_import_results.py")
         with col2:
-            if st.button("Export Design Template", use_container_width=True):
+            if st.button("Export Design Template", width='stretch'):
                 from src.ui.utils.export import export_design_with_metadata
                 csv_content = export_design_with_metadata(
                     design, factors, [], 
@@ -122,7 +206,7 @@ if not responses or not response_names:
                     data=csv_content,
                     file_name="design_template.csv",
                     mime="text/csv",
-                    use_container_width=True
+                    width='stretch'
                 )
         
         st.stop()
@@ -248,6 +332,14 @@ st.divider()
 
 st.subheader("📈 Analysis Results")
 
+# Build unit lookup dicts for current responses and factors
+_response_defs = st.session_state.get('response_definitions', [])
+_response_units_map = {
+    r['name']: r.get('units') for r in _response_defs
+}
+_factor_units_map = {f.name: f.units for f in factors}
+current_response_units = _response_units_map.get(selected_response)
+
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 Model Fit", "📉 Effects & Residuals",
     "🔍 Design Diagnostics", "📈 Profiler"
@@ -258,21 +350,43 @@ with tab1:
     
     with col1:
         st.markdown("**Actual vs Predicted**")
+        # Split-plot tables use a 'P' column with a 'Model' row.
+        # Standard statsmodels anova_lm tables use 'PR(>F)' with no 'Model' row;
+        # the overall model p-value lives on the fitted model's f_pvalue.
         if not results.anova_table.empty and 'P' in results.anova_table.columns:
-            model_p = results.anova_table.loc['Model', 'P'] if 'Model' in results.anova_table.index else 0.0
+            # Split-plot path
+            model_p = results.anova_table.loc['Model', 'P'] if 'Model' in results.anova_table.index else np.nan
+        elif hasattr(results.fitted_model, 'f_pvalue'):
+            # Standard OLS path
+            model_p = float(results.fitted_model.f_pvalue)
         else:
-            model_p = 0.0
+            model_p = np.nan
         
         fig = create_parity_plot(
             response_filtered, results.fitted_values,
-            results.r_squared, results.adj_r_squared, results.rmse, model_p
+            response_units=current_response_units,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch', theme=None)
+        if np.isnan(model_p):
+            p_display = "N/A"
+        elif model_p < 0.0001:
+            p_display = f"{model_p:.4e}"
+        else:
+            p_display = f"{model_p:.4f}"
+        st.caption(
+            f"R² = {results.r_squared:.4f}   |   "
+            f"Adj R² = {results.adj_r_squared:.4f}   |   "
+            f"RMSE = {results.rmse:.4f}   |   "
+            f"p = {p_display}"
+        )
     
     with col2:
         st.markdown("**Residuals vs Fitted**")
-        fig = create_residual_plot(results.fitted_values, results.residuals)
-        st.plotly_chart(fig, use_container_width=True)
+        fig = create_residual_plot(
+            results.fitted_values, results.residuals,
+            response_units=current_response_units,
+        )
+        st.plotly_chart(fig, width='stretch')
     
     st.divider()
     
@@ -284,13 +398,13 @@ with tab1:
             p_values[term] = p_val
         
         fig = create_logworth_plot(results.logworth, p_values)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
     st.divider()
     
     st.markdown("**ANOVA Table**")
     if not results.anova_table.empty:
-        st.dataframe(results.anova_table, use_container_width=True)
+        _display_anova_table(results.anova_table)
     
     # Lack-of-Fit test
     display_lack_of_fit_test(
@@ -298,7 +412,7 @@ with tab1:
     )
 with tab2:
     st.markdown("**Coefficient Table**")
-    st.dataframe(results.effect_estimates, use_container_width=True)
+    st.dataframe(results.effect_estimates, width='stretch')
     
     st.divider()
     
@@ -413,13 +527,17 @@ with tab2:
                                 name='Effect', showlegend=False
                             ))
                             
+                            response_adj_label = _label_with_units(
+                                f"{selected_response} (adjusted)",
+                                current_response_units,
+                            )
                             fig.update_layout(
                                 xaxis_title=format_term_for_display(term),
-                                yaxis_title=f"{selected_response} (adjusted)",
+                                yaxis_title=response_adj_label,
                                 height=300, showlegend=False
                             )
                             fig = apply_plot_style(fig)
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width='stretch')
                         else:
                             st.warning(f"Could not find term '{term}' in model matrix")
                     
@@ -445,14 +563,15 @@ with tab2:
             hovertemplate='Run %{x}<br>Residual: %{y:.3f}<extra></extra>'
         ))
         fig.add_hline(y=0, line=dict(color=PLOT_COLORS['danger'], dash='dash', width=2))
-        fig.update_layout(xaxis_title='Run Order', yaxis_title='Residuals', height=350)
+        residuals_label = _label_with_units('Residuals', current_response_units)
+        fig.update_layout(xaxis_title='Run Order', yaxis_title=residuals_label, height=350)
         fig = apply_plot_style(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
     with col2:
         st.markdown("**Normal Q-Q Plot**")
         fig = create_qq_plot(results.residuals)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
     st.divider()
     
@@ -472,9 +591,11 @@ with tab2:
                 hovertemplate=f'{factor.name}: %{{x}}<br>Residual: %{{y:.3f}}<extra></extra>'
             ))
             fig.add_hline(y=0, line=dict(color=PLOT_COLORS['danger'], dash='dash', width=2))
-            fig.update_layout(xaxis_title=factor.name, yaxis_title='Residuals', height=250)
+            factor_x_label = _label_with_units(factor.name, _factor_units_map.get(factor.name))
+            residuals_label = _label_with_units('Residuals', current_response_units)
+            fig.update_layout(xaxis_title=factor_x_label, yaxis_title=residuals_label, height=250)
             fig = apply_plot_style(fig)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     
     st.divider()
     
@@ -493,7 +614,7 @@ with tab2:
         if effects is not None:
             effect_names = [format_term_for_display(term) for term in effects_data.index]
             fig = create_half_normal_plot(effects, effect_names)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     else:
         st.info("No effects to plot (intercept-only model)")
 
@@ -524,25 +645,26 @@ with tab4:
         results=results,
         factors=factors,
         format_term_for_display=format_term_for_display,
+        response_units=current_response_units,
     )
 st.divider()
 
 col1, col2, col3 = st.columns([1, 1, 1])
 
 with col1:
-    if st.button("← Back to Import", use_container_width=True):
+    if st.button("← Back to Import", width='stretch'):
         st.session_state['current_step'] = 5
         st.switch_page("pages/5_import_results.py")
 
 with col2:
     if st.session_state.get('quality_report'):
         if st.session_state['quality_report'].summary.needs_any_augmentation():
-            if st.button("🔬 Augmentation", type="primary", use_container_width=True):
+            if st.button("🔬 Augmentation", type="primary", width='stretch'):
                 st.session_state['current_step'] = 7
                 st.session_state['show_augmentation'] = True
                 st.switch_page("pages/7_augmentation.py")
 
 with col3:
-    if st.button("Optimize →", use_container_width=True):
+    if st.button("Optimize →", width='stretch'):
         st.session_state['current_step'] = 8
         st.switch_page("pages/8_optimize.py")

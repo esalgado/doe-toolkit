@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 
 from src.core.factors import Factor, FactorType
+from src.core.coding import decode_design as _decode_design
 from src.core.aliasing import (
     FactorMapper,
     GeneratorValidator,
@@ -253,21 +254,26 @@ class FractionalFactorial:
         
         # Reorder columns to match original factor order
         design = base_design[[f.name for f in self.factors]]
-        
+
         # Add standard order
         design.insert(0, 'StdOrder', range(1, len(design) + 1))
-        
+
         # Randomize if requested
         if randomize:
             design = design.sample(frac=1, random_state=random_seed).reset_index(drop=True)
-        
+
         # Add run order
         design.insert(1, 'RunOrder', range(1, len(design) + 1))
-        
+
         # Add blocking if requested
         if n_blocks is not None:
             design = self._assign_blocks(design, n_blocks)
-        
+
+        # Decode continuous factors from coded [-1, +1] to natural units.
+        # base factors were generated at coded levels by full_factorial;
+        # generated (aliased) factors inherit the same coded scale.
+        design = _decode_design(design, self.factors)
+
         return design
     
     def _assign_blocks(self, design: pd.DataFrame, n_blocks: int) -> pd.DataFrame:

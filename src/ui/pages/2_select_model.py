@@ -96,7 +96,7 @@ with st.expander("📋 Defined Factors", expanded=False):
     import pandas as pd
     st.dataframe(
         pd.DataFrame(factor_data),
-        use_container_width=True,
+        width='stretch',
         hide_index=True
     )
 
@@ -233,37 +233,42 @@ This model will be used to:
 # ==================== MODEL TERM BREAKDOWN ====================
 
 with st.expander("🔍 Term Details", expanded=False):
-    intercept_terms = [t for t in terms if t == '1']
-    main_effects = [t for t in terms if t != '1' and '*' not in t and not t.startswith('I(')]
-    interactions = [t for t in terms if '*' in t and not t.startswith('I(')]
-    powers = [t for t in terms if t.startswith('I(') and '*' not in t]
-    power_interactions = [t for t in terms if t.startswith('I(') and '*' in t]
-    
     from src.ui.components.model_builder import format_term_for_display
-    
+
+    _TRANSFORM_STARTS_S2 = ("np.log(", "np.sqrt(", "np.exp(", "I(1/")
+
+    def _is_nonlinear_s2(t: str) -> bool:
+        return t.startswith("I(") or any(t.startswith(p) for p in _TRANSFORM_STARTS_S2)
+
+    intercept_terms = [t for t in terms if t == '1']
+    main_effects = [
+        t for t in terms if t != '1' and not _is_nonlinear_s2(t) and '*' not in t
+    ]
+    interactions = [
+        t for t in terms if not _is_nonlinear_s2(t) and '*' in t
+    ]
+    powers = [
+        t for t in terms if _is_nonlinear_s2(t)
+    ]
+
     if intercept_terms:
         st.markdown("**Intercept:**")
         for t in intercept_terms:
             st.write(f"  • {format_term_for_display(t)}")
-    
+
     if main_effects:
         st.markdown("**Main Effects:**")
         for t in main_effects:
             st.write(f"  • {format_term_for_display(t)}")
-    
+
     if interactions:
         st.markdown("**Interactions:**")
         for t in interactions:
             st.write(f"  • {format_term_for_display(t)}")
-    
+
     if powers:
-        st.markdown("**Power Terms:**")
+        st.markdown("**Power / Transform Terms:**")
         for t in powers:
-            st.write(f"  • {format_term_for_display(t)}")
-    
-    if power_interactions:
-        st.markdown("**Power Interactions:**")
-        for t in power_interactions:
             st.write(f"  • {format_term_for_display(t)}")
 
 # ==================== NAVIGATION ====================
@@ -273,14 +278,14 @@ st.markdown("---")
 col1, col2, col3 = st.columns([1, 2, 1])
 
 with col1:
-    if st.button("← Back to Factors", use_container_width=True):
+    if st.button("← Back to Factors", width='stretch'):
         st.switch_page("pages/1_define_factors.py")
 
 with col3:
     # Model selection complete if we have at least one term
     if len(terms) > 0:
         st.session_state['step_2_complete'] = True
-        if st.button("Next: Choose Design →", use_container_width=True, type="primary"):
+        if st.button("Next: Choose Design →", width='stretch', type="primary"):
             st.switch_page("pages/3_choose_design.py")
     else:
         st.warning("Select at least one model term to continue")

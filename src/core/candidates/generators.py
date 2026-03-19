@@ -208,30 +208,60 @@ def _exclude_existing_points(
 ) -> np.ndarray:
     """
     Exclude candidate points that are too close to existing design points.
-    
+
     Uses KDTree for efficient spatial queries: O(n log m) instead of O(n*m).
+
+    Notes
+    -----
+    Only continuous/discrete-numeric factors are used for distance computation.
+    Categorical factors are skipped because they have no natural distance metric
+    and cannot be represented in a KDTree.
     """
     from scipy.spatial import cKDTree
-    
-    # Extract existing points in coded space
-    factor_names = [f.name for f in factors]
-    existing_points = existing_design[factor_names].values
+    from src.core.factors import FactorType
+
+    # Only use numeric factors for spatial distance — categoricals have no metric
+    numeric_factors = [
+        f for f in factors
+        if f.factor_type in (FactorType.CONTINUOUS, FactorType.DISCRETE_NUMERIC)
+    ]
+
+    if not numeric_factors:
+        # Nothing to exclude on — return all candidates unchanged
+        return candidates
+
+    factor_names = [f.name for f in numeric_factors]
+
+    # Guard: only select columns that actually exist in the design
+    available = [name for name in factor_names if name in existing_design.columns]
+    if not available:
+        return candidates
+
+    # Extract and coerce to float (guards against object-dtype DataFrames)
+    try:
+        existing_points = existing_design[available].values.astype(float)
+    except (ValueError, TypeError):
+        # If coercion fails (e.g. mixed strings) skip exclusion rather than crash
+        return candidates
+
     existing_points = np.round(existing_points, decimals=6)
+
+    # Restrict candidates to the same numeric dimensions
+    # candidates columns order matches `factors` order; find the subset indices
+    all_factor_names = [f.name for f in factors]
+    numeric_col_indices = [
+        all_factor_names.index(name) for name in available
+        if name in all_factor_names
+    ]
+    candidates_numeric = candidates[:, numeric_col_indices]
     
-    # Build KDTree for fast nearest-neighbor queries
+    # Build KDTree on numeric dimensions only
     tree = cKDTree(existing_points)
-    
-    # Query tree for each candidate
-    keep_mask = np.ones(len(candidates), dtype=bool)
-    
-    for i, candidate in enumerate(candidates):
-        # Find distance to nearest existing point
-        distance, _ = tree.query(candidate)
-        
-        # Exclude if too close
-        if distance < min_distance:
-            keep_mask[i] = False
-    
+
+    # Query tree for each candidate (numeric dims only)
+    distances, _ = tree.query(candidates_numeric)
+    keep_mask = distances >= min_distance
+
     return candidates[keep_mask]
 
 
@@ -384,56 +414,3 @@ def _bias_candidates_to_regions(
     
     return candidates
 
-
-def evaluate_candidate_pool_quality(
-    candidates: np.ndarray,
-    n_runs: int
-) -> dict:
-    """
-    Evaluate quality of candidate pool.
-    
-    Parameters
-    ----------
-    candidates : np.ndarray
-        Candidate points
-    n_runs : int
-        Target number of runs
-    
-    Returns
-    -------
-    dict
-        Quality metrics:
-        - 'n_candidates': Number of candidates
-        - 'density': Candidates per run
-        - 'coverage': Fraction of design space covered
-        - 'min_distance': Minimum distance between candidates
-    
-    Examples
-    --------
-    >>> metrics = evaluate_candidate_pool_quality(candidates, n_runs=20)
-    >>> print(f"Density: {metrics['density']:.1f} candidates per run")
-    """
-    n_candidates, k = candidates.shape
-    
-    # Density
-    density = n_candidates / n_runs if n_runs > 0 else 0
-    
-    # Coverage (crude estimate: fraction of hypercube volume covered)
-    # Use convex hull volume (simplified: just range in each dimension)
-    ranges = np.ptp(candidates, axis=0)
-    coverage = np.mean(ranges / 2.0)  # Normalize by full range [-1, 1]
-    
-    # Minimum distance between candidates
-    if len(candidates) > 1:
-        from scipy.spatial.distance import pdist
-        distances = pdist(candidates)
-        min_distance = np.min(distances) if len(distances) > 0 else 0.0
-    else:
-        min_distance = np.inf
-    
-    return {
-        'n_candidates': n_candidates,
-        'density': density,
-        'coverage': coverage,
-        'min_distance': min_distance
-    }

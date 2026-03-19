@@ -19,6 +19,7 @@ from src.ui.utils.state_management import (
     initialize_session_state,
     invalidate_downstream_state
 )
+from src.core.coding import DesignSpace
 from src.core.factors import Factor, FactorType
 from src.ui.utils.csv_parser import (
     parse_doe_csv,
@@ -113,7 +114,7 @@ if st.session_state.get('design') is not None and st.session_state.get('response
         preview_df = design.copy()
         for name, data in responses.items():
             preview_df[name] = data
-        st.dataframe(preview_df.head(10), use_container_width=True)
+        st.dataframe(preview_df.head(10), width='stretch')
 
 st.divider()
 
@@ -172,7 +173,7 @@ if uploaded_file:
         
         st.dataframe(
             pd.DataFrame(factor_table_data),
-            use_container_width=True,
+            width='stretch',
             hide_index=True
         )
         
@@ -188,13 +189,13 @@ if uploaded_file:
             
             st.dataframe(
                 pd.DataFrame(response_table_data),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True
             )
         
         # Show design data preview
         with st.expander("🔍 Design Data Preview (first 10 rows)", expanded=False):
-            st.dataframe(parse_result.design_data.head(10), use_container_width=True)
+            st.dataframe(parse_result.design_data.head(10), width='stretch')
         
         st.divider()
         
@@ -203,20 +204,28 @@ if uploaded_file:
             st.markdown("### ✅ Ready to Import")
             st.caption("This will load the factors, design, and responses into the current session.")
             
-            if st.button("📥 Import All Data", type="primary", use_container_width=True):
+            if st.button("📥 Import All Data", type="primary", width='stretch'):
                 # Load into session
                 st.session_state['factors'] = parse_result.factors
                 st.session_state['design'] = parse_result.design_data
+                st.session_state['design_natural'] = parse_result.design_data
+                st.session_state['design_space'] = DesignSpace.from_factors(parse_result.factors)
                 st.session_state['response_definitions'] = parse_result.response_definitions
                 st.session_state['design_metadata'] = parse_result.metadata
-                
+
+                # Restore design-level model terms from CSV header so that
+                # analysis starts pre-populated with the intended model.
+                _csv_terms = parse_result.model_terms or {}
+                if '__design__' in _csv_terms:
+                    st.session_state['model_terms'] = _csv_terms['__design__']
+
                 # Extract responses
                 responses = extract_responses_from_design(
                     parse_result.design_data,
                     parse_result.factors,
                     parse_result.response_definitions
                 )
-                
+
                 if responses:
                     st.session_state['responses'] = responses
                     st.session_state['response_names'] = list(responses.keys())
@@ -228,7 +237,7 @@ if uploaded_file:
                     st.session_state['response_names'] = []
                     st.warning("⚠️ No response data found in CSV (columns are empty)")
                     st.info("👉 Design imported! You can view the design or add response data later. Click 'Analyze Design →' below.")
-                
+
                 st.rerun()
         
         # PATH 2: Active session with existing factors
@@ -250,14 +259,26 @@ if uploaded_file:
                     st.caption(f"Session: {', '.join(sorted(session_responses))}")
                     st.caption(f"CSV: {', '.join(sorted(csv_responses))}")
                 
-                if st.button("📥 Import Results (Keep Session Factors)", type="primary", use_container_width=True):
+                if st.button("📥 Import Results (Keep Session Factors)", type="primary", width='stretch'):
+                    # Update design state to match CSV (natural units).
+                    # Factors are kept from the session; design_space is rebuilt
+                    # in case factors were modified since the original design was made.
+                    st.session_state['design'] = parse_result.design_data
+                    st.session_state['design_natural'] = parse_result.design_data
+                    st.session_state['design_space'] = DesignSpace.from_factors(st.session_state['factors'])
+
                     # Extract responses
                     responses = extract_responses_from_design(
                         parse_result.design_data,
                         st.session_state['factors'],
                         parse_result.response_definitions
                     )
-                    
+
+                    # Restore design-level model terms from CSV header.
+                    _csv_terms = parse_result.model_terms or {}
+                    if '__design__' in _csv_terms:
+                        st.session_state['model_terms'] = _csv_terms['__design__']
+
                     if responses:
                         st.session_state['responses'] = responses
                         st.session_state['response_names'] = list(responses.keys())
@@ -270,7 +291,7 @@ if uploaded_file:
                         st.session_state['response_names'] = []
                         st.warning("⚠️ No response data in CSV")
                         st.info("👉 Click 'Analyze Design →' to view design structure.")
-                    
+
                     st.rerun()
             
             else:
@@ -293,7 +314,7 @@ if uploaded_file:
                         'Match': '✓' if csv_name == session_name and csv_name != '—' else '✗'
                     })
                 
-                st.dataframe(pd.DataFrame(comparison_data), use_container_width=True)
+                st.dataframe(pd.DataFrame(comparison_data), width='stretch')
                 
                 st.divider()
                 
@@ -303,9 +324,11 @@ if uploaded_file:
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    if st.button("🔄 Replace Session with CSV Factors", use_container_width=True):
+                    if st.button("🔄 Replace Session with CSV Factors", width='stretch'):
                         st.session_state['factors'] = parse_result.factors
                         st.session_state['design'] = parse_result.design_data
+                        st.session_state['design_natural'] = parse_result.design_data
+                        st.session_state['design_space'] = DesignSpace.from_factors(parse_result.factors)
                         st.session_state['response_definitions'] = parse_result.response_definitions
                         
                         # Extract responses
@@ -323,7 +346,7 @@ if uploaded_file:
                         st.rerun()
                 
                 with col2:
-                    if st.button("📤 Re-upload Corrected CSV", use_container_width=True):
+                    if st.button("📤 Re-upload Corrected CSV", width='stretch'):
                         st.info("Please upload a CSV that matches your session factors, or start a new session.")
     
     else:
@@ -358,7 +381,7 @@ st.divider()
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    if st.button("← Back to Design", use_container_width=True):
+    if st.button("← Back to Design", width='stretch'):
         st.switch_page("pages/4_preview_design.py")
 
 with col3:
@@ -381,7 +404,7 @@ with col3:
     if st.button(
         button_text,
         type="primary", 
-        use_container_width=True,
+        width='stretch',
         disabled=not can_proceed,
         help=help_text
     ):

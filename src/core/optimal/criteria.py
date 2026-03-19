@@ -196,11 +196,7 @@ class DOptimalityCriterion(OptimalityCriterion):
                 return -1e10
 
             XtX_ridge = XtX + self.ridge * np.eye(XtX.shape[0])
-            sign, logdet = np.linalg.slogdet(XtX_ridge)
-
-            if sign <= 0:
-                return -1e10
-
+            _, logdet = np.linalg.slogdet(XtX_ridge)
             return logdet
 
         except (np.linalg.LinAlgError, ValueError):

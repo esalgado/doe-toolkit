@@ -22,7 +22,12 @@ class ParseResult:
     factors: List[Factor]
     response_definitions: List[Dict[str, Optional[str]]]
     design_data: pd.DataFrame
+    model_terms: Dict[str, List[str]] = None  # type: ignore[assignment]
     error: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.model_terms is None:
+            self.model_terms = {}
 
     @property
     def is_valid(self) -> bool:
@@ -76,12 +81,14 @@ def parse_doe_csv(file_content: str) -> ParseResult:
         metadata = extract_metadata_block(lines)
         factors = extract_factor_definitions(lines)
         response_definitions = extract_response_definitions(lines)
+        model_terms = extract_model_terms(lines)
         design_data = extract_design_data(lines)
 
         return ParseResult(
             metadata=metadata,
             factors=factors,
             response_definitions=response_definitions,
+            model_terms=model_terms,
             design_data=design_data,
             error=None,
         )
@@ -91,6 +98,7 @@ def parse_doe_csv(file_content: str) -> ParseResult:
             metadata={},
             factors=[],
             response_definitions=[],
+            model_terms={},
             design_data=pd.DataFrame(),
             error=str(e),
         )
@@ -350,7 +358,7 @@ def extract_response_definitions(lines: List[str]) -> List[Dict[str, Optional[st
             in_section = True
             continue
 
-        if in_section and line.startswith("# DESIGN DATA"):
+        if in_section and (line.startswith("# DESIGN DATA") or line.startswith("# MODEL TERMS")):
             break
 
         if not in_section:
@@ -384,6 +392,70 @@ def extract_response_definitions(lines: List[str]) -> List[Dict[str, Optional[st
         responses.append({"name": name, "units": units if units else None})
 
     return responses
+
+
+def extract_model_terms(lines: List[str]) -> Dict[str, List[str]]:
+    """
+    Parse MODEL TERMS section from CSV header.
+
+    Format:
+    # MODEL TERMS
+    # Response,Terms
+    # Yield,1|Temperature|Pressure|Temperature:Pressure
+    # __design__,1|A|B|A:B
+
+    The special key ``__design__`` holds design-level model terms (from Step 2)
+    that apply before per-response fitting has occurred.
+
+    Parameters
+    ----------
+    lines : List[str]
+        Raw CSV lines.
+
+    Returns
+    -------
+    Dict[str, List[str]]
+        Mapping of response name (or ``__design__``) to list of term strings.
+        Returns empty dict if section is absent.
+    """
+    model_terms: Dict[str, List[str]] = {}
+    in_section = False
+    header_found = False
+
+    for line in lines:
+        if "# MODEL TERMS" in line:
+            in_section = True
+            continue
+
+        if in_section and line.startswith("# DESIGN DATA"):
+            break
+
+        if not in_section:
+            continue
+
+        if not line.startswith("#"):
+            break
+
+        if "Response,Terms" in line:
+            header_found = True
+            continue
+
+        # Empty comment line
+        if line.lstrip("#").strip().replace(",", "") == "":
+            continue
+
+        content = line.lstrip("#").strip()
+        if "," not in content:
+            continue
+
+        response_name, _, terms_str = content.partition(",")
+        response_name = response_name.strip()
+        terms = [t.strip() for t in terms_str.split("|") if t.strip()]
+
+        if response_name and terms:
+            model_terms[response_name] = terms
+
+    return model_terms
 
 
 def extract_design_data(lines: List[str]) -> pd.DataFrame:
@@ -516,6 +588,7 @@ def generate_doe_csv(
     response_definitions: Optional[List[Dict[str, Optional[str]]]] = None,
     design_type: str = "custom",
     design_metadata: Optional[Dict] = None,
+    model_terms: Optional[Dict[str, List[str]]] = None,
 ) -> str:
     """
     Generate DOE-Toolkit CSV with metadata header.
@@ -532,6 +605,11 @@ def generate_doe_csv(
         Type of design (e.g., "full_factorial", "optimal").
     design_metadata : Optional[Dict]
         Additional metadata to include in header.
+    model_terms : Optional[Dict[str, List[str]]]
+        Model terms to embed in the CSV header.  Keys are response names
+        (from ``model_terms_per_response``) or ``__design__`` for the
+        design-level terms from Step 2.  Terms are pipe-delimited on each
+        row so they survive round-trip through the CSV metadata block.
 
     Returns
     -------
@@ -559,7 +637,13 @@ def generate_doe_csv(
     for factor in factors:
         factor_type_str = factor.factor_type.value
         changeability_str = factor.changeability.value
-        units_str = factor.units if factor.units else ""
+        # Normalize units: strip list notation if stored as "['unit']" due to
+        # st.data_editor returning list values for some column types.
+        raw_units = factor.units if factor.units else ""
+        if isinstance(raw_units, list):
+            raw_units = raw_units[0] if raw_units else ""
+        units_str = str(raw_units).strip().lstrip("['").rstrip("']")
+        units_str = units_str if units_str and units_str.lower() not in ['nan', 'none'] else ""
 
         # Format levels based on type
         if factor.is_continuous():
@@ -581,16 +665,27 @@ def generate_doe_csv(
             units_str = response.get("units") or ""
             lines.append(f"# {response['name']},{units_str}")
 
+    # Model terms
+    if model_terms:
+        lines.append("#")
+        lines.append("# MODEL TERMS")
+        lines.append("# Response,Terms")
+
+        for response_name, terms in model_terms.items():
+            terms_str = "|".join(terms)
+            lines.append(f"# {response_name},{terms_str}")
+
     # Design data
     lines.append("#")
     lines.append("# DESIGN DATA")
 
-    # Add response columns (empty) to design
+    # Add response columns to design; preserve pre-filled values if already present
     design_with_responses = design.copy()
 
     if response_definitions:
         for response in response_definitions:
-            design_with_responses[response["name"]] = ""
+            if response["name"] not in design_with_responses.columns:
+                design_with_responses[response["name"]] = ""
 
     csv_data = design_with_responses.to_csv(index=False)
     lines.append(csv_data.rstrip())
