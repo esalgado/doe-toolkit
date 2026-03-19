@@ -377,10 +377,6 @@ def display_model_builder(
     can_cross = len(selected_factors) >= 2
     can_power = (len(selected_factors) == 1 and
                  selected_factors[0] in continuous_names)
-    can_power_cross = (
-        len(selected_factors) >= 2
-        and any(f in continuous_names for f in selected_factors)
-    )
     can_transform = (
         len(selected_factors) == 1
         and selected_factors[0] in continuous_names
@@ -396,103 +392,53 @@ def display_model_builder(
         </style>
     """, unsafe_allow_html=True)
 
-    op_row = st.columns([1, 1, 1, 1, 1, 1, 1.5, 1.5])
-    
-    # Process button clicks but DON'T return early - let equation display happen
+    # Row 2: operator buttons | divider | intercept toggle | preset buttons
+    op_row = st.columns([1, 1, 1, 1, 1, 0.5, 1, 1.5, 1.5])
+
+    _tf = selected_factors[0] if can_transform else ""
+
     with op_row[0]:
-        if st.button("Main", disabled=not can_main, key=f"{key_prefix}_main", 
+        if st.button("Main", disabled=not can_main, key=f"{key_prefix}_main",
                      width='stretch', help="Add as main effects"):
             for factor in selected_factors:
                 if factor not in current_terms:
                     current_terms.append(factor)
-            # DON'T return here - continue to display equation
-    
+
     with op_row[1]:
         if st.button("×", disabled=not can_cross, key=f"{key_prefix}_cross",
                      width='stretch', help="Cross (interaction)"):
             term = '*'.join(sorted(selected_factors))
             if term not in current_terms:
                 current_terms.append(term)
-            # DON'T return here - continue to display equation
-    
+
     with op_row[2]:
-        st.button(
-            "²×",
-            disabled=True,
-            key=f"{key_prefix}_power_cross_placeholder",
-            width='stretch',
-            help="Use the Power × Cross expander below to configure this term",
-        )
-
-    with op_row[3]:
-        if st.button("³", disabled=not can_power, key=f"{key_prefix}_cube",
-                     width='stretch', help="Cube"):
-            term = f"I({selected_factors[0]}**3)"
-            if term not in current_terms:
-                current_terms.append(term)
-            # DON'T return here - continue to display equation
-
-    # Row 2b: Transform buttons (continuous single-factor operations)
-    _tf = selected_factors[0] if can_transform else ""
-    transform_row = st.columns([1, 1, 1, 1, 5])
-
-    with transform_row[0]:
-        if st.button(
-            "ln",
-            disabled=not can_transform,
-            key=f"{key_prefix}_tf_log",
-            width='stretch',
-            help="Natural log: log(A)",
-        ):
+        if st.button("ln", disabled=not can_transform, key=f"{key_prefix}_tf_log",
+                     width='stretch', help="Natural log: log(A)"):
             term = f"np.log({_tf})"
             if term not in current_terms:
                 current_terms.append(term)
 
-    with transform_row[1]:
-        if st.button(
-            "√",
-            disabled=not can_transform,
-            key=f"{key_prefix}_tf_sqrt",
-            width='stretch',
-            help="Square root: √A",
-        ):
+    with op_row[3]:
+        if st.button("√", disabled=not can_transform, key=f"{key_prefix}_tf_sqrt",
+                     width='stretch', help="Square root: √A"):
             term = f"np.sqrt({_tf})"
             if term not in current_terms:
                 current_terms.append(term)
 
-    with transform_row[2]:
-        if st.button(
-            "1/x",
-            disabled=not can_transform,
-            key=f"{key_prefix}_tf_recip",
-            width='stretch',
-            help="Reciprocal: 1/A",
-        ):
+    with op_row[4]:
+        if st.button("1/x", disabled=not can_transform, key=f"{key_prefix}_tf_recip",
+                     width='stretch', help="Reciprocal: 1/A"):
             term = f"I(1/{_tf})"
             if term not in current_terms:
                 current_terms.append(term)
 
-    with transform_row[3]:
-        if st.button(
-            "exp",
-            disabled=not can_transform,
-            key=f"{key_prefix}_tf_exp",
-            width='stretch',
-            help="Exponential: exp(A)",
-        ):
-            term = f"np.exp({_tf})"
-            if term not in current_terms:
-                current_terms.append(term)
-
-    # Divider between custom and presets
-    with op_row[4]:
-        st.markdown("<div style='text-align: center; padding: 0.25rem;'>|</div>", 
-                   unsafe_allow_html=True)
-    
-    # Preset buttons - these CAN return early since they replace the entire model
-    include_intercept = '1' in current_terms
-    
     with op_row[5]:
+        st.markdown("<div style='text-align:center;padding:0.4rem 0;'>|</div>",
+                    unsafe_allow_html=True)
+
+    include_intercept = '1' in current_terms
+
+    with op_row[6]:
         if st.button("β₀", key=f"{key_prefix}_intercept_toggle",
                      width='stretch', help="Toggle intercept",
                      type="primary" if include_intercept else "secondary"):
@@ -500,41 +446,50 @@ def display_model_builder(
                 current_terms = [t for t in current_terms if t != '1']
             else:
                 current_terms.insert(0, '1')
-            # DON'T return early for consistency
-    
-    with op_row[6]:
+
+    with op_row[7]:
         if st.button("Linear", key=f"{key_prefix}_linear", width='stretch'):
             new_terms, warning = get_preset_terms('Linear', factors, include_intercept)
             if warning:
                 st.warning(warning)
-            return new_terms  # OK to return - preset buttons replace entire model
-    
-    with op_row[7]:
+            return new_terms
+
+    with op_row[8]:
         if st.button("Quadratic", key=f"{key_prefix}_quad", width='stretch'):
             new_terms, warning = get_preset_terms('Quadratic', factors, include_intercept)
             if warning:
                 st.warning(warning)
-            return new_terms  # OK to return - preset buttons replace entire model
-    
-    # Row 3: More presets + custom power
-    preset_row = st.columns([1, 1, 1, 1, 3])
+            return new_terms
 
-    with preset_row[0]:
+    # Row 2b: exp button + preset continuations (exp needs single-factor continuous)
+    row2b = st.columns([1, 1, 1, 3])
+
+    with row2b[0]:
+        if st.button("exp", disabled=not can_transform, key=f"{key_prefix}_tf_exp",
+                     width='stretch', help="Exponential: exp(A)"):
+            term = f"np.exp({_tf})"
+            if term not in current_terms:
+                current_terms.append(term)
+
+    with row2b[1]:
         if st.button("RSM", key=f"{key_prefix}_rsm", width='stretch'):
             new_terms, warning = get_preset_terms('RSM', factors, include_intercept)
             if warning:
                 st.warning(warning)
-            return new_terms  # OK to return - preset buttons replace entire model
+            return new_terms
 
-    with preset_row[1]:
+    with row2b[2]:
         if st.button("2FI", key=f"{key_prefix}_full2fi", width='stretch',
                      help="Full 2-way interactions"):
             new_terms, warning = get_preset_terms('Full Interaction', factors, include_intercept)
             if warning:
                 st.warning(warning)
-            return new_terms  # OK to return - preset buttons replace entire model
+            return new_terms
+    
+    # Row 3: Custom power term
+    preset_row = st.columns([1, 1, 5])
 
-    with preset_row[2]:
+    with preset_row[0]:
         custom_power_val = st.number_input(
             "^",
             min_value=2,
@@ -545,7 +500,7 @@ def display_model_builder(
             help="Exponent for single-factor power term",
         )
 
-    with preset_row[3]:
+    with preset_row[1]:
         st.markdown("<div style='padding-top: 1.6rem;'>", unsafe_allow_html=True)
         if st.button(
             f"Add ^{custom_power_val}",
@@ -675,18 +630,45 @@ def display_model_builder(
     else:
         st.caption(f"{len(current_terms)} terms selected (click ❌ to remove)")
         
-        # Group terms by type
+        # ------------------------------------------------------------------ #
+        # Term classification
+        # ------------------------------------------------------------------ #
+        # A term is a "transform or power" if it is non-linear and has no
+        # cross factor (the rightmost * outside any parens).  This bucket
+        # covers: I(A**2), np.log(A), np.sqrt(A), I(1/A), np.exp(A),
+        # I(np.log(A)**2), etc.
+        #
+        # A term is a "transform/power cross" if it is non-linear AND has a
+        # cross factor: I(A**2)*B, np.log(A)*B, I(np.log(A)**2)*B.
+        #
+        # Plain interactions (A*B) stay in their own bucket.
+        # Plain main effects (A, Catalyst) stay in theirs.
+        _TRANSFORM_STARTS = ("np.log(", "np.sqrt(", "np.exp(", "I(1/")
+
+        def _is_nonlinear(t: str) -> bool:
+            """True for any term that is not a plain main effect or plain interaction."""
+            return t.startswith("I(") or any(t.startswith(p) for p in _TRANSFORM_STARTS)
+
         intercept_terms = [t for t in current_terms if t == '1']
-        main_effects = [t for t in current_terms if t not in intercept_terms and '*' not in t and not t.startswith('I(')]
-        interactions = [t for t in current_terms if '*' in t and not t.startswith('I(')]
-        powers = [t for t in current_terms if t.startswith('I(') and '*' not in t]
-        power_interactions = [t for t in current_terms if t.startswith('I(') and '*' in t]
+        main_effects = [
+            t for t in current_terms
+            if t != '1' and not _is_nonlinear(t) and '*' not in t
+        ]
+        interactions = [
+            t for t in current_terms
+            if not _is_nonlinear(t) and '*' in t
+        ]
+        # Power/Transform: all non-linear terms (with or without a cross factor)
+        powers = [
+            t for t in current_terms
+            if _is_nonlinear(t)
+        ]
         
         # Track if user clicked remove
         remove_term = None
         
-        # Create 5-column layout
-        cols = st.columns(5)
+        # Create 4-column layout
+        cols = st.columns(4)
         
         # Column 0: Intercept
         with cols[0]:
@@ -724,25 +706,13 @@ def display_model_builder(
             else:
                 st.caption("_(none)_")
         
-        # Column 3: Powers
+        # Column 3: Power / Transform (all non-linear terms)
         with cols[3]:
-            st.markdown("*Power*")
+            st.markdown("*Power/Transform*")
             if powers:
                 for idx, term in enumerate(powers):
                     display = format_term_for_display(term)
                     btn_key = f"{key_prefix}_rm_pow_{idx}_{hash(term) % 10000}"
-                    if st.button(f"❌ {display}", key=btn_key, width='stretch'):
-                        remove_term = term
-            else:
-                st.caption("_(none)_")
-        
-        # Column 4: Power Interactions
-        with cols[4]:
-            st.markdown("*Power×*")
-            if power_interactions:
-                for idx, term in enumerate(power_interactions):
-                    display = format_term_for_display(term)
-                    btn_key = f"{key_prefix}_rm_powint_{idx}_{hash(term) % 10000}"
                     if st.button(f"❌ {display}", key=btn_key, width='stretch'):
                         remove_term = term
             else:
@@ -820,8 +790,9 @@ def display_stepwise_button(
         
         # Generate all possible terms as candidate pool
         st.caption(
-            "Stepwise will consider all main effects, 2-way interactions, "
-            "and quadratic terms for continuous factors."
+            "Stepwise considers main effects, 2-way interactions, and quadratic "
+            "terms only. Transform terms (log, √, 1/x, exp) are not included — "
+            "select those manually in the model builder above before running stepwise."
         )
     
     # Stepwise button
