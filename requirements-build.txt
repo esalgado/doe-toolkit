@@ -1,5 +1,0 @@
-# Build requirements
-# conda-pack must be installed in the base conda environment, not here.
-# Run: conda install conda-pack
-#
-# No pip-installable build dependencies are required for the conda-pack approach.
