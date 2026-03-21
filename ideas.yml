@@ -1,0 +1,39 @@
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing your idea! The more context you provide, the easier it is for maintainers and the community to evaluate and prioritize it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the gap or limitation you're running into with the current toolkit.
+      placeholder: |
+        e.g. "There's no way to generate a Central Composite Design with custom alpha values..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to see added or changed? Feel free to include API ideas, design sketches, or examples.
+      placeholder: |
+        e.g. "A `ccd(alpha='custom', alpha_value=1.5)` parameter in the CCD builder..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Any workarounds you're currently using, or other tools that handle this differently?
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: References, papers, use cases, or anything else that might help.

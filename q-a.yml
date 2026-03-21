@@ -1,0 +1,35 @@
+title: "[Q&A]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question about using doe-toolkit? Ask away! Please check the [documentation](https://github.com/bpimentel3/doe-toolkit) and existing discussions first to avoid duplicates.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to do or understand?
+      placeholder: |
+        e.g. "How do I generate a Box-Behnken design with 5 factors?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: Share any code, approaches, or docs you've already looked at. This helps avoid back-and-forth.
+      placeholder: |
+        e.g. "I tried `doe.bbdesign(5)` but got an error..."
+      render: python
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment (if relevant)
+      description: Python version, OS, package version — only needed if your question is about an error or unexpected result.
+      placeholder: |
+        - Python: 3.11
+        - doe-toolkit: 0.4.2
+        - OS: macOS 14
