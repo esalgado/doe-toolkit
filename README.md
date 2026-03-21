@@ -33,17 +33,21 @@ Provides professional statistical design capabilities — without the expensive 
 ## Getting Started
 
 ### For Users (Windows)
-1. Download `DOE-Toolkit.zip` from the [Releases page](https://github.com/bpimentel3/doe-toolkit/releases)
-2. Extract to any folder
-3. Double-click `DOE-Toolkit.bat`
-4. The app opens in your browser automatically
+1. Go to the [Releases page](https://github.com/bpimentel3/doe-toolkit/releases)
+2. Download `DOE-Toolkit-v0.1.0-win64.zip` from the **Assets** section
+3. Extract to any folder (right-click → Extract All)
+4. Double-click `DOE-Toolkit.bat`
+5. The app opens in your browser automatically
 
-No Python required. No installation. No admin rights needed.
+**No Python required. No installation. No admin rights needed.**
+
+> **Note:** Do not download the auto-generated "Source code" ZIP from GitHub.
+> Always download the named release asset (`DOE-Toolkit-v0.1.0-win64.zip`).
 
 See [QUICKSTART.md](QUICKSTART.md) for a full walkthrough.
 
 ### For Developers
-```bash
+```powershell
 git clone https://github.com/bpimentel3/doe-toolkit.git
 cd doe-toolkit
 conda create -n doe-toolkit python=3.11
