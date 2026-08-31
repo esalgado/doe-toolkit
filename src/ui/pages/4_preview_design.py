@@ -254,12 +254,14 @@ if st.session_state.get('design') is None:
                 if design_type == "Full Factorial":
                     from src.core.full_factorial import full_factorial
                     
+                    n_blocks = design_config.get('n_blocks', 1)
                     design = full_factorial(
                         factors=factors,
-                        n_center_points = design_config.get('n_center_points', 0),
+                        n_center_points=design_config.get('n_center_points', 0),
+                        n_replicates=design_config.get('n_replicates', 1),
                         randomize=st.session_state.get('randomize', True),
                         random_seed=st.session_state.get('random_seed'),
-                        n_blocks=st.session_state.get('n_blocks')
+                        n_blocks=None if n_blocks <= 1 else n_blocks
                     )
                     
                     metadata = {
@@ -284,10 +286,11 @@ if st.session_state.get('design') is None:
                     )
                     
                     # Generate design
+                    n_ff_blocks = design_config.get('n_blocks', 1)
                     design = ff.generate(
                         randomize=st.session_state.get('randomize', True),
                         random_seed=st.session_state.get('random_seed'),
-                        n_blocks=st.session_state.get('n_blocks')
+                        n_blocks=None if n_ff_blocks <= 1 else n_ff_blocks
                     )
                     
                     # Store metadata

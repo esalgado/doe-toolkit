@@ -526,7 +526,7 @@ class TestDegreesOfFreedom:
         assert results.r_squared == 1.0
         assert 'A' in results.effect_estimates.index
     
-     def test_oversaturated_model_warns(self):
+    def test_oversaturated_model_warns(self):
         """Test that oversaturated model (df<0) warns."""
         factors = [
             Factor("A", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1]),
@@ -869,6 +869,48 @@ class TestValidationData:
     def test_basic_factorial_validation(self):
         """Basic validation test - will expand later."""
         pass
+
+
+class TestBlocking:
+    """Test that blocking is included in the ANOVA analysis as a fixed effect."""
+
+    def _blocked_design(self):
+        """A 2^2 factorial in 2 blocks with replicates (natural units)."""
+        factors = [
+            Factor("A", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1]),
+            Factor("B", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1])
+        ]
+        design = full_factorial(factors, n_replicates=2, n_blocks=2, randomize=False)
+        # Block effect: block 1 adds -5, block 2 adds +5
+        block_effect = np.where(design['Block'] == 1, -5.0, 5.0)
+        response = 10 + 2 * design['A'] + 3 * design['B'] + block_effect
+        return design, response, factors
+
+    def test_fixed_effect_block_fits(self):
+        """Block included as a fixed effect by default."""
+        design, response, factors = self._blocked_design()
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(['A', 'B'])
+
+        assert results is not None
+        # Block term should appear in the ANOVA table
+        assert 'Block' in results.anova_table.index
+
+    def test_design_structure_detects_blocking(self):
+        """Detection sees a Block column in a blocked design."""
+        design, response, factors = self._blocked_design()
+        analysis = ANOVAAnalysis(design, response, factors)
+        assert analysis.design_structure['has_blocking'] is True
+
+    def test_replicated_blocked_design_fits(self):
+        """A design with both replicates and blocks fits the fixed-effect model."""
+        design, response, factors = self._blocked_design()
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(['A', 'B'])
+
+        assert results is not None
+        assert 'Block' in results.anova_table.index
+        assert results.r_squared > 0.99
 
 
 if __name__ == "__main__":
