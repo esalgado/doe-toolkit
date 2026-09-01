@@ -146,16 +146,14 @@ class ANOVAResults:
                     prediction += float(coefficients[coef_key]) * val ** 2
 
             elif operator == "*":
-                # Two-way interaction (A*B -> patsy stores as A:B)
-                vals = [float(settings.get(f, 0)) for f in factor_list]  # type: ignore[arg-type]
-                product = vals[0] * vals[1]
-                coef_key = next(
-                    (k for k in coefficients.index
-                     if k == term or k == term.replace("*", ":")),
-                    None,
+                # Two-way interaction (A*B -> patsy stores as A:B).
+                # Continuous factors enter as scalar * value; categorical
+                # factors match their dummy key F[T.level]. patsy expands a
+                # categorical interaction into dummies with the all-reference
+                # baseline suppressed.
+                prediction += self._predict_interaction(
+                    factor_list, term, settings, coefficients
                 )
-                if coef_key is not None:
-                    prediction += float(coefficients[coef_key]) * product
 
             else:
                 # Main effect - continuous or categorical
@@ -175,6 +173,70 @@ class ANOVAResults:
                     # Reference level contributes 0 (absorbed in intercept)
 
         return prediction
+
+    def _predict_interaction(
+        self,
+        factor_list: List[str],
+        term: str,
+        settings: Dict[str, object],
+        coefficients: pd.Series,
+    ) -> float:
+        """
+        Predict the contribution of a two-way interaction term.
+
+        Handles continuous/continuous (single ``A:B`` coefficient) as well as
+        categorical interactions (patsy expands into ``C(A)[T.x]:C(B)[T.y]``
+        dummies with the all-reference baseline suppressed; the plain ``A:B``
+        key corresponds to a categorical main effect evaluated at its
+        reference level in the other dimension).
+
+        Each factor in the interaction is matched against the levels in
+        ``settings``.  Continuous factors are treated as scalar variables; a
+        match is required for categorical ones.
+        """
+        total = 0.0
+        f1, f2 = factor_list
+        v1 = settings.get(f1, 0)
+        v2 = settings.get(f2, 0)
+
+        # Classify each side as continuous (scalar) or categorical (has
+        # dummy keys of the form F[T.level] in the coefficient index).
+        def is_categorical(name: str) -> bool:
+            cat_level_key = f"{name}[T."
+            return any(
+                str(k).startswith(cat_level_key)
+                for k in coefficients.index
+            )
+
+        cat1 = is_categorical(f1)
+        cat2 = is_categorical(f2)
+
+        if not cat1 and not cat2:
+            # Both continuous: single coefficient A:B
+            coef_key = next(
+                (k for k in coefficients.index
+                 if k == term or k == term.replace("*", ":")),
+                None,
+            )
+            if coef_key is not None:
+                return float(coefficients[coef_key]) * float(v1) * float(v2)
+            return 0.0
+
+        # At least one categorical. Build the exact patsy interaction key(s)
+        # for the selected levels and sum the matching coefficients.
+        #   categorical-only : A[T.x]:B[T.y]   (order matches term)
+        #   mixed            : A[T.x]:B  or  A:B[T.y]
+        def side_key(name: str, val: object, cat: bool) -> str:
+            return f"{name}[T.{val}]" if cat else name
+
+        k1 = side_key(f1, v1, cat1)
+        k2 = side_key(f2, v2, cat2)
+
+        candidates = {f"{k1}:{k2}", f"{k2}:{k1}"}
+        for k in coefficients.index:
+            if str(k) in candidates:
+                total += float(coefficients[k])
+        return total
 
 
 # ---------------------------------------------------------------------------
@@ -350,13 +412,31 @@ def parse_model_term(term: str) -> Tuple[List[str], str]:
     # misclassifying np.log(A)*B as an interaction)                      #
     # ------------------------------------------------------------------ #
     if '*' in term:
-        factor_list = [f.strip() for f in term.split('*')]
+        factor_list = [_unwrap_c(seg) for seg in term.split('*')]
         return factor_list, '*'
 
     # ------------------------------------------------------------------ #
-    # Plain main effect: A                                                #
+    # Plain main effect: A (or C(A) for categorical factors)              #
     # ------------------------------------------------------------------ #
-    return [term.strip()], ''
+    return [_unwrap_c(term.strip())], ''
+
+
+def _unwrap_c(segment: str) -> str:
+    """
+    Strip a patsy ``C(...)`` wrapper from a factor segment so its underlying
+    factor name can be found in the factor registry.
+
+    Examples
+    --------
+    >>> _unwrap_c('C(Egg_lot)')
+    'Egg_lot'
+    >>> _unwrap_c('Egg_lot')
+    'Egg_lot'
+    """
+    segment = segment.strip()
+    if segment.startswith('C(') and segment.endswith(')'):
+        return segment[2:-1].strip()
+    return segment
 
 
 # ---------------------------------------------------------------------------

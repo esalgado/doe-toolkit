@@ -913,5 +913,115 @@ class TestBlocking:
         assert results.r_squared > 0.99
 
 
+class TestCategoricalNumericLabels:
+    """Categorical factors with numeric-looking levels must be fit as
+    categorical (k-1 dummy columns), not silently as continuous."""
+
+    def test_parse_model_term_strips_c_wrapper(self):
+        """parse_model_term tolerates patsy C(...) wrappers."""
+        main_factors, op1 = parse_model_term('C(Egg_lot)')
+        assert main_factors == ['Egg_lot']
+        assert op1 == ''
+
+        int_factors, op2 = parse_model_term('C(Egg_lot)*Egg_percent')
+        assert int_factors == ['Egg_lot', 'Egg_percent']
+        assert op2 == '*'
+
+    def test_full_factorial_categorical_df(self):
+        """4-level categorical x 2-level numeric with replicates: lot DF=3,
+        percent DF=1, interaction DF=3 (was DF=1 when coerced to numeric)."""
+        lot_levels = ['41007587', '41005191', '41007741', '41007302']
+        factors = [
+            Factor('Egg_lot', FactorType.CATEGORICAL, ChangeabilityLevel.EASY,
+                   levels=lot_levels, _validate_on_init=False),
+            Factor('Egg_percent', FactorType.DISCRETE_NUMERIC,
+                   ChangeabilityLevel.EASY, levels=[10, 20]),
+        ]
+
+        design = full_factorial(factors, n_replicates=2, randomize=False)
+        # Egg_lot column must remain a string column in the design
+        assert pd.api.types.is_string_dtype(design['Egg_lot'])
+        assert design['Egg_lot'].nunique() == 4
+
+        # Deterministic response: strong lot effect, mild percent + noise
+        rng = np.random.default_rng(42)
+        lot_means = {lot: m for lot, m in zip(lot_levels, [100, 102, 98, 105])}
+        response = (
+            design['Egg_lot'].map(lot_means).astype(float)
+            + 1.5 * design['Egg_percent']
+            + rng.normal(0, 0.05, len(design))
+        )
+
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(['Egg_lot', 'Egg_percent', 'Egg_lot*Egg_percent'])
+
+        df = results.anova_table['df']
+        assert results.anova_table.index.get_loc('Egg_lot') is not None
+        assert int(df.loc['Egg_lot']) == 3
+        assert int(df.loc['Egg_percent']) == 1
+        assert int(df.loc['Egg_lot:Egg_percent']) == 3
+
+        # No C(...) wrappers leak into reported labels
+        assert not any('C(' in str(i) for i in results.anova_table.index)
+        assert not any('C(' in str(i) for i in results.effect_estimates.index)
+
+        # effect_estimates use plain [T.level] dummy keys (predict compat)
+        main_dummy_keys = [
+            i for i in results.effect_estimates.index
+            if str(i).startswith('Egg_lot[') and ':' not in str(i)
+        ]
+        assert len(main_dummy_keys) == 3
+        interaction_keys = [
+            i for i in results.effect_estimates.index
+            if str(i).startswith('Egg_lot[') and ':' in str(i)
+        ]
+        assert len(interaction_keys) == 3
+
+    def test_categorical_df_matches_dummy_regression(self):
+        """Wrapped formula produces the same DF as coding the dummies by hand."""
+        lot_levels = ['41007587', '41005191', '41007741', '41007302']
+        factors = [
+            Factor('Egg_lot', FactorType.CATEGORICAL, ChangeabilityLevel.EASY,
+                   levels=lot_levels, _validate_on_init=False),
+            Factor('Egg_percent', FactorType.DISCRETE_NUMERIC,
+                   ChangeabilityLevel.EASY, levels=[10, 20]),
+        ]
+        design = full_factorial(factors, n_replicates=2, randomize=False)
+
+        rng = np.random.default_rng(7)
+        lot_means = {lot: m for lot, m in zip(lot_levels, [50, 52, 48, 55])}
+        response = (
+            design['Egg_lot'].map(lot_means).astype(float)
+            + 0.5 * design['Egg_percent']
+            + rng.normal(0, 0.1, len(design))
+        )
+
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(['Egg_lot', 'Egg_percent', 'Egg_lot*Egg_percent'])
+        df = results.anova_table['df']
+
+        # Reference: hand-built design matrix using 3 lot dummies + numeric,
+        # plus the 3 per-level interaction columns (dummy * percent)
+        ref = pd.get_dummies(design['Egg_lot'], prefix='Egg_lot', prefix_sep='')
+        ref = ref.iloc[:, 1:]  # drop the reference level (fits with intercept)
+        X = pd.concat([design[['Egg_percent']], ref], axis=1)
+        for col in ref.columns:
+            X[f'{col}:Egg_percent'] = ref[col] * design['Egg_percent']
+        from statsmodels.api import OLS
+        ref_fit = OLS(response, sm_add_constant(X)).fit()
+        ref_rsq = ref_fit.rsquared
+
+        assert df.loc['Egg_lot'] == 3
+        assert df.loc['Egg_percent'] == 1
+        assert df.loc['Egg_lot:Egg_percent'] == 3
+        assert abs(results.r_squared - ref_rsq) < 1e-9
+
+
+def sm_add_constant(frame):
+    """Add an intercept column to an arbitrary DataFrame."""
+    import statsmodels.api as sm
+    return sm.add_constant(frame)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
