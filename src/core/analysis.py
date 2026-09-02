@@ -25,6 +25,8 @@ from src.core.factors import Factor, FactorType, ChangeabilityLevel
 from src.core.coding import DesignSpace
 from src.core.analysis_base import (
     ANOVAResults,
+    build_anova_effect_summary,
+    build_coefficient_significance,
     enforce_hierarchy,
     parse_model_term,
     quadratic,
@@ -448,6 +450,20 @@ class ANOVAAnalysis:
             else:
                 logworth_values.append(-np.log10(p))
         logworth_df['LogWorth'] = logworth_values
+
+        # Canonical effect tables.  ``coefficient_significance`` keeps the
+        # fitted-model coefficient tests; ``anova_effect_summary`` is sourced
+        # from the displayed ANOVA table.  The two are deliberately distinct.
+        block_names = ('Block',) if (
+            self.design_structure.get('has_blocking')
+            and not self.block_as_random
+        ) else ()
+        coefficient_significance = build_coefficient_significance(
+            effect_estimates, anova_table, block_factor_names=block_names
+        )
+        anova_effect_summary = build_anova_effect_summary(
+            anova_table, effect_estimates, block_factor_names=block_names
+        )
         
         return ANOVAResults(
             anova_table=anova_table,
@@ -461,7 +477,9 @@ class ANOVAAnalysis:
             is_split_plot=is_split_plot,
             r_squared=r_squared,
             adj_r_squared=adj_r_squared,
-            rmse=rmse
+            rmse=rmse,
+            coefficient_significance=coefficient_significance,
+            anova_effect_summary=anova_effect_summary,
         )
     
     def _compute_diagnostics(self, residuals: np.ndarray, fitted_values: np.ndarray) -> Dict:

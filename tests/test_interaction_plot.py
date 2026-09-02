@@ -244,6 +244,48 @@ class TestCreateInteractionPlot(BaseInteractionFixture):
         assert len(fig.data) == 2  # two B levels
         assert fig.layout.xaxis.type == "category"
 
+    def test_integer_numeric_factors_render_lines(self):
+        """Integer-valued discrete-numeric factors must draw visible lines.
+
+        Regression: ``_sorted_levels`` returned floats (1.0, 2.0) while the
+        stats columns were stringified from the original ints ('1', '2'),
+        so ``str(1.0)`` never matched '1' and every y-value was None.
+        """
+        factors = [
+            Factor("Temperature", FactorType.DISCRETE_NUMERIC,
+                   ChangeabilityLevel.EASY, levels=[70, 80]),
+            Factor("Catalyst", FactorType.DISCRETE_NUMERIC,
+                   ChangeabilityLevel.EASY, levels=[1, 2]),
+        ]
+        design = full_factorial(factors, n_replicates=2, randomize=False)
+        # Deterministic response: each temperature/catalyst combo distinct.
+        response = np.array(
+            [10.0, 12.0, 16.0, 18.0] * 2, dtype=float
+        )
+        assert design["Catalyst"].dtype.kind in "iu"  # integer column
+
+        stats = interaction_stats("Temperature", "Catalyst", design, response)
+        assert len(stats) == 4  # 2 temperatures x 2 catalysts
+
+        # Catalyst on the x-axis (integer numeric): lines drawn, not empty.
+        fig = create_interaction_plot(
+            stats, "Catalyst", "Temperature", False, False, "Yield"
+        )
+        assert len(fig.data) == 2
+        ys = sorted(tuple(t.y) for t in fig.data)
+        assert ys == [(10.0, 12.0), (16.0, 18.0)]
+        assert fig.layout.xaxis.type == "linear"
+        assert list(fig.data[0].x) == [1.0, 2.0]
+
+        # Temperature on the x-axis (integer numeric): lines drawn too.
+        fig2 = create_interaction_plot(
+            stats, "Temperature", "Catalyst", False, False, "Yield"
+        )
+        assert len(fig2.data) == 2
+        ys2 = sorted(tuple(t.y) for t in fig2.data)
+        assert ys2 == [(10.0, 16.0), (12.0, 18.0)]
+        assert list(fig2.data[0].x) == [70.0, 80.0]
+
 
 class TestIntegrationWithANOVA(BaseInteractionFixture):
     """End-to-end: fit ANOVA, read interaction p-value, build plot."""

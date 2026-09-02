@@ -90,7 +90,10 @@ def predict_with_intervals(
     PI is always wider than CI because it includes both parameter uncertainty
     and random error variance.
     """
-    pred_df = pd.DataFrame([x_pred], columns=factor_names)
+    if isinstance(x_pred, pd.DataFrame):
+        pred_df = x_pred.copy()
+    else:
+        pred_df = pd.DataFrame([x_pred], columns=factor_names)
     if model_is_coded and factors is not None:
         from src.core.coding import encode_design
         pred_df = encode_design(pred_df, factors)
@@ -156,6 +159,97 @@ class OptimizationResult:
     n_iterations: int
 
 
+# ============================================================
+# SCALAR: OPTIMIZATION DIMENSIONS
+# ============================================================
+
+
+class _OptimizationDims:
+    """Plan the optimizer search space across mixed factor types.
+
+    Continuous and discrete-numeric factors become real dimensions bounded
+    by their [min, max] values (actual units).  Categorical factors cannot be
+    optimised on their raw label value, so each is represented as an integer
+    "level index" dimension over ``[0, k-1]``.  The objective, initial point
+    and result extraction all go through :meth:`to_prediction_frame` /
+    :meth:`snap_to_settings` so categorical indices are mapped back to their
+    declared level labels before the model is asked to predict.
+    """
+
+    def __init__(self, factors: List[Factor]):
+        self.factors = factors
+        self.names = [f.name for f in factors]
+        # Bounds are always in actual space; categorical indices in [0, k-1].
+        self.bounds: List[Tuple[float, float]] = []
+        self.integrality: List[int] = []  # 1 == integer dim (categorical index)
+        self._categorical_index: Dict[str, int] = {}
+        self._has_categorical = False
+
+        for i, f in enumerate(factors):
+            if f.is_continuous() or f.is_discrete_numeric():
+                self.bounds.append((f.min_value, f.max_value))
+                self.integrality.append(0)
+            else:  # categorical
+                self._has_categorical = True
+                self._categorical_index[f.name] = i
+                self.bounds.append((0, len(f.levels) - 1))
+                self.integrality.append(1)
+
+    @property
+    def has_categorical(self) -> bool:
+        return self._has_categorical
+
+    def has_numeric(self) -> bool:
+        return any(n == 0 for n in self.integrality)
+
+    def x0(self) -> np.ndarray:
+        """Starting point: centre of each dimension (mid-index for categoricals)."""
+        x0 = np.zeros(len(self.factors))
+        for i, f in enumerate(self.factors):
+            if f.is_continuous() or f.is_discrete_numeric():
+                x0[i] = (f.min_value + f.max_value) / 2
+            else:
+                x0[i] = (len(f.levels) - 1) / 2
+        return x0
+
+    def to_prediction_frame(self, x: np.ndarray) -> pd.DataFrame:
+        """Build the prediction frame from an optimizer vector.
+
+        Continuous/discrete dims keep their real values; categorical dims are
+        snapped to the nearest level index and replaced with the declared
+        level label so the model formula can form its dummies.
+        """
+        row = {}
+        for i, f in enumerate(self.factors):
+            if f.is_continuous() or f.is_discrete_numeric():
+                row[f.name] = float(x[i])
+            else:
+                idx = int(round(float(x[i])))
+                idx = int(np.clip(idx, 0, len(f.levels) - 1))
+                row[f.name] = f.levels[idx]
+        return pd.DataFrame([row], columns=self.names)
+
+    def snap_to_settings(self, x: np.ndarray) -> Dict[str, object]:
+        """Map an optimizer vector to human-readable factor settings."""
+        settings = {}
+        for i, f in enumerate(self.factors):
+            if f.is_continuous() or f.is_discrete_numeric():
+                settings[f.name] = float(x[i])
+            else:
+                idx = int(np.clip(round(float(x[i])), 0, len(f.levels) - 1))
+                settings[f.name] = f.levels[idx]
+        return settings
+
+
+def _pinned_categorical_defaults(factors: List[Factor]) -> Dict[str, object]:
+    """Default categorical level choices (first declared level) per factor."""
+    return {
+        f.name: f.levels[0]
+        for f in factors
+        if f.is_categorical()
+    }
+
+
 def optimize_response(
     anova_results: ANOVAResults,
     factors: List[Factor],
@@ -167,6 +261,7 @@ def optimize_response(
     alpha: float = 0.05,
     seed: Optional[int] = None,
     model_is_coded: bool = False,
+    pinned_levels: Optional[Dict[str, object]] = None,
 ) -> OptimizationResult:
     """
     Find optimal factor settings for single response.
@@ -191,11 +286,17 @@ def optimize_response(
         Significance level for intervals
     seed : int, optional
         Random seed for reproducibility
+    pinned_levels : Dict[str, object], optional
+        Categorical levels to hold fixed (name -> declared level).  Any
+        categorical factor NOT listed here is treated as a free dimension and
+        the optimizer selects its best level.
     
     Returns
     -------
     OptimizationResult
-        Optimization results with optimal settings and predictions
+        Optimization results with optimal settings and predictions.  For
+        free categorical factors, ``optimal_settings`` holds the chosen level
+        label; for numeric factors a float value.
     
     Raises
     ------
@@ -215,92 +316,133 @@ def optimize_response(
     if objective == 'target' and target_value is None:
         raise ValueError("target_value must be provided when objective='target'")
     
-    # Extract model and factor names
     from src.core.coding import encode_design
     model = anova_results.fitted_model
-    factor_names = [f.name for f in factors]
 
-    # Build bounds — always in actual (natural) space so the user can
-    # interpret the results directly.
-    if bounds is None:
-        bounds_list = [(f.min_value, f.max_value) for f in factors]
-    else:
-        bounds_list = [bounds.get(f.name, (f.min_value, f.max_value)) for f in factors]
+    dims = _OptimizationDims(factors)
+    factor_names = dims.names
+    pinned_levels = dict(pinned_levels or {})
 
-    # Build objective function
+    # Apply user-supplied numeric bounds as hard bounds (actual space).
+    bounds_list = list(dims.bounds)
+    if bounds:
+        idx_by_name = {f.name: i for i, f in enumerate(factors)}
+        for name, (lo, hi) in bounds.items():
+            i = idx_by_name.get(name)
+            if i is None:
+                raise ValueError(f"Unknown factor in bounds: {name}")
+            if dims.integrality[i]:
+                raise ValueError(
+                    f"Bounds cannot be set for categorical factor '{name}'."
+                )
+            bounds_list[i] = (lo, hi)
+
+    # Apply user-pinned categorical levels as hard bounds [i, i] (fixed dim).
+    for name, level in pinned_levels.items():
+        idx = dims._categorical_index.get(name)
+        if idx is None:
+            raise ValueError(
+                f"Pinned level '{level}' for non-categorical factor '{name}'. "
+                "Only categorical factors can be pinned to a level."
+            )
+        fac = factors[idx]
+        if level not in fac.levels:
+            raise ValueError(
+                f"Level '{level}' is not a valid level for factor '{name}'. "
+                f"Valid levels: {fac.levels}"
+            )
+        li = fac.levels.index(level)
+        bounds_list[idx] = (li, li)
+
+    # Build objective function (operates on the full optimizer vector).
     def objective_func(x: np.ndarray) -> float:
         """Objective to minimize (negate for maximize)."""
-        # x is in actual space; encode to coded space only when the model
-        # was fit on a coded design (CCD/factorial).  CSV-imported designs
-        # are stored in actual space, so no encoding is needed there.
-        pred_df = pd.DataFrame([x], columns=factor_names)
+        pred_df = dims.to_prediction_frame(x)
         if model_is_coded:
             pred_df = encode_design(pred_df, factors)
         y_pred = model.predict(pred_df)[0]
-        
+
         if objective == 'maximize':
             return -y_pred  # Negate for minimization
         elif objective == 'minimize':
             return y_pred
         else:  # target
-            # Minimize squared deviation from target
             return (y_pred - target_value) ** 2
-    
+
     # Convert linear constraints to scipy format if provided
     scipy_constraints = []
     if linear_constraints is not None:
         scipy_constraints = _convert_linear_constraints(
             linear_constraints, factors
         )
-    
-    # Starting point: center of design space
-    x0 = np.array([(f.min_value + f.max_value) / 2 for f in factors])
-    
-    # Add random perturbation if seed provided
+
+    # Starting point: center of each dimension (mid-index for categoricals).
+    x0 = dims.x0()
+
+    # Add random perturbation if seed provided.
     if seed is not None:
         rng = np.random.default_rng(seed)
         perturbation = rng.uniform(-0.1, 0.1, size=len(factors))
-        ranges = np.array([f.max_value - f.min_value for f in factors])
+        ranges = np.array([b[1] - b[0] for b in dims.bounds])
         x0 = x0 + perturbation * ranges
         x0 = np.clip(x0, [b[0] for b in bounds_list], [b[1] for b in bounds_list])
-    
-    # Optimize using SLSQP (handles bounds and linear constraints)
-    result = minimize(
-        objective_func,
-        x0=x0,
-        method='SLSQP',
-        bounds=bounds_list,
-        constraints=scipy_constraints,
-        options={'maxiter': 500, 'ftol': 1e-9}
-    )
-    
-    # If failed, try differential_evolution (global optimizer)
-    if not result.success:
-        warnings.warn(
-            f"SLSQP failed: {result.message}. Trying global optimizer..."
-        )
-        from scipy.optimize import differential_evolution
-        
-        result = differential_evolution(
+        if dims.has_categorical:
+            # Centre categorical dims on integer indices before snapping.
+            for i, is_int in enumerate(dims.integrality):
+                if is_int:
+                    x0[i] = round(x0[i])
+
+    # Choose the solver: SLSQP for pure-numeric designs (unchanged behaviour);
+    # differential_evolution with integrality when categoricals are present.
+    if not dims.has_categorical:
+        result = minimize(
             objective_func,
+            x0=x0,
+            method='SLSQP',
             bounds=bounds_list,
-            constraints=scipy_constraints if scipy_constraints else None,
-            seed=seed,
-            maxiter=300,
-            atol=1e-9,
-            tol=1e-9
+            constraints=scipy_constraints,
+            options={'maxiter': 500, 'ftol': 1e-9}
         )
-    
-    # Extract optimal settings
+    else:
+        result = None
+        if scipy_constraints:
+            warnings.warn(
+                "Linear constraints are ignored for designs containing "
+                "categorical factors."
+            )
+        try:
+            from scipy.optimize import differential_evolution
+            result = differential_evolution(
+                objective_func,
+                bounds=bounds_list,
+                integrality=dims.integrality,
+                maxiter=500,
+                popsize=20,
+                seed=seed,
+                polish=False,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            warnings.warn(f"differential_evolution failed: {exc}")
+
+        if result is None or not result.success:
+            # Fallback: expand discrete leaves and compare directly.
+            warnings.warn(
+                "Global categorical optimizer did not converge; enumerating "
+                "categorical level combinations instead."
+            )
+            result = _enumerate_categorical_best(objective_func, dims)
+
+    # Extract optimal settings (numeric floats; categorical level labels).
     x_opt = result.x
-    optimal_settings = {factor_names[i]: x_opt[i] for i in range(len(factors))}
-    
-    # Predict at optimum with intervals
+    optimal_settings = dims.snap_to_settings(x_opt)
+
+    # Predict at optimum with intervals.
+    pred_df = dims.to_prediction_frame(x_opt)
     pred, ci, pi = predict_with_intervals(
-        model, x_opt, factor_names,
+        model, pred_df, factor_names,
         factors=factors, model_is_coded=model_is_coded, alpha=alpha
     )
-    
+
     return OptimizationResult(
         optimal_settings=optimal_settings,
         predicted_response=pred,
@@ -308,8 +450,66 @@ def optimize_response(
         prediction_interval=pi,
         objective_value=result.fun,
         success=result.success,
-        message=result.message,
+        message=getattr(result, 'message', ''),
         n_iterations=result.nit if hasattr(result, 'nit') else 0
+    )
+
+
+def _enumerate_categorical_best(
+    objective_func: Callable[[np.ndarray], float],
+    dims: _OptimizationDims,
+) -> object:
+    """Brute-force the categorical dimensions.
+
+    Used as a last-resort fallback when differential_evolution is unavailable
+    or does not converge.  Only valid when every dimension is categorical
+    (no free numeric dims); otherwise we return a nominal failure result so
+    the caller surfaces a clear message rather than a wrong answer.
+    """
+    from types import SimpleNamespace
+
+    if dims.has_numeric():
+        return SimpleNamespace(
+            x=np.zeros(len(dims.factors)),
+            fun=float('inf'),
+            success=False,
+            message=(
+                "Optimization failed for categorical + numeric design: "
+                "global solver unavailable."
+            ),
+            nit=0,
+        )
+
+    cat_indices = [i for i, n in enumerate(dims.integrality) if n == 1]
+    if not cat_indices:
+        return SimpleNamespace(
+            x=dims.x0(), fun=float('inf'), success=False,
+            message="No dimensions to optimize.", nit=0,
+        )
+
+    axis_count = [len(dims.factors[i].levels) for i in cat_indices]
+
+    best = None
+    best_fun = float('inf')
+    total = 1
+    for c in axis_count:
+        total *= c
+
+    for flat in range(total):
+        x = dims.x0()
+        rem = flat
+        for pos, counts in enumerate(axis_count):
+            x[cat_indices[pos]] = rem % counts
+            rem //= counts
+        fun = objective_func(x)
+        if fun < best_fun:
+            best_fun = fun
+            best = x.copy()
+
+    return SimpleNamespace(
+        x=best, fun=best_fun, success=True,
+        message=f"Enumerated {total} categorical combination(s).",
+        nit=total,
     )
 
 
@@ -663,6 +863,7 @@ def optimize_desirability(
     linear_constraints: Optional[List['LinearConstraint']] = None,
     seed: Optional[int] = None,
     model_is_coded: bool = False,
+    pinned_levels: Optional[Dict[str, object]] = None,
 ) -> DesirabilityResult:
     """
     Optimize multiple responses using desirability functions.
@@ -681,11 +882,17 @@ def optimize_desirability(
         Linear constraints on factors
     seed : int, optional
         Random seed
+    pinned_levels : Dict[str, object], optional
+        Categorical levels to hold fixed (name -> declared level).  Any
+        categorical factor NOT listed here is a free dimension and the
+        optimizer selects its best level.
     
     Returns
     -------
     DesirabilityResult
-        Optimization results with optimal settings and desirabilities
+        Optimization results with optimal settings and desirabilities.  For
+        free categorical factors, ``optimal_settings`` holds the chosen level
+        label; for numeric factors a float.
     
     Examples
     --------
@@ -708,18 +915,45 @@ def optimize_desirability(
             raise ValueError(f"No model provided for response: {response_name}")
     
     from src.core.coding import encode_design
-    factor_names = [f.name for f in factors]
+    dims = _OptimizationDims(factors)
+    factor_names = dims.names
+    pinned_levels = dict(pinned_levels or {})
 
-    # Build bounds — always in actual (natural) space.
-    if bounds is None:
-        bounds_list = [(f.min_value, f.max_value) for f in factors]
-    else:
-        bounds_list = [bounds.get(f.name, (f.min_value, f.max_value)) for f in factors]
+    # Apply user-supplied numeric bounds as hard bounds (actual space).
+    bounds_list = list(dims.bounds)
+    if bounds:
+        idx_by_name = {f.name: i for i, f in enumerate(factors)}
+        for name, (lo, hi) in bounds.items():
+            i = idx_by_name.get(name)
+            if i is None:
+                raise ValueError(f"Unknown factor in bounds: {name}")
+            if dims.integrality[i]:
+                raise ValueError(
+                    f"Bounds cannot be set for categorical factor '{name}'."
+                )
+            bounds_list[i] = (lo, hi)
+
+    # Apply user-pinned categorical levels as fixed dimensions.
+    for name, level in pinned_levels.items():
+        idx = dims._categorical_index.get(name)
+        if idx is None:
+            raise ValueError(
+                f"Pinned level '{level}' for non-categorical factor '{name}'. "
+                "Only categorical factors can be pinned to a level."
+            )
+        fac = factors[idx]
+        if level not in fac.levels:
+            raise ValueError(
+                f"Level '{level}' is not a valid level for factor '{name}'. "
+                f"Valid levels: {fac.levels}"
+            )
+        li = fac.levels.index(level)
+        bounds_list[idx] = (li, li)
 
     # Build objective function (maximize overall desirability)
     def objective_func(x: np.ndarray) -> float:
         """Objective to minimize (negate desirability)."""
-        pred_df = pd.DataFrame([x], columns=factor_names)
+        pred_df = dims.to_prediction_frame(x)
         if model_is_coded:
             pred_df = encode_design(pred_df, factors)
 
@@ -743,48 +977,62 @@ def optimize_desirability(
         )
     
     # Starting point
-    x0 = np.array([(f.min_value + f.max_value) / 2 for f in factors])
+    x0 = dims.x0()
     
     if seed is not None:
         rng = np.random.default_rng(seed)
         perturbation = rng.uniform(-0.1, 0.1, size=len(factors))
-        ranges = np.array([f.max_value - f.min_value for f in factors])
+        ranges = np.array([b[1] - b[0] for b in dims.bounds])
         x0 = x0 + perturbation * ranges
         x0 = np.clip(x0, [b[0] for b in bounds_list], [b[1] for b in bounds_list])
+        if dims.has_categorical:
+            for i, is_int in enumerate(dims.integrality):
+                if is_int:
+                    x0[i] = round(x0[i])
     
-    # Optimize
-    result = minimize(
-        objective_func,
-        x0=x0,
-        method='SLSQP',
-        bounds=bounds_list,
-        constraints=scipy_constraints,
-        options={'maxiter': 500, 'ftol': 1e-9}
-    )
-    
-    # If failed, try global optimizer
-    if not result.success:
-        warnings.warn(
-            f"SLSQP failed: {result.message}. Trying global optimizer..."
-        )
-        from scipy.optimize import differential_evolution
-        
-        result = differential_evolution(
+    if not dims.has_categorical:
+        result = minimize(
             objective_func,
+            x0=x0,
+            method='SLSQP',
             bounds=bounds_list,
-            constraints=scipy_constraints if scipy_constraints else None,
-            seed=seed,
-            maxiter=300,
-            atol=1e-9,
-            tol=1e-9
+            constraints=scipy_constraints,
+            options={'maxiter': 500, 'ftol': 1e-9}
         )
+    else:
+        result = None
+        if scipy_constraints:
+            warnings.warn(
+                "Linear constraints are ignored for designs containing "
+                "categorical factors."
+            )
+        try:
+            from scipy.optimize import differential_evolution
+            result = differential_evolution(
+                objective_func,
+                bounds=bounds_list,
+                integrality=dims.integrality,
+                maxiter=500,
+                popsize=20,
+                seed=seed,
+                polish=False,
+            )
+        except Exception as exc:
+            warnings.warn(f"differential_evolution failed: {exc}")
+
+        if result is None or not result.success:
+            warnings.warn(
+                "Global categorical optimizer did not converge; enumerating "
+                "categorical level combinations instead."
+            )
+            result = _enumerate_categorical_best(objective_func, dims)
     
-    # Extract optimal settings
+    # Extract optimal settings (numeric floats; categorical level labels).
     x_opt = result.x
-    optimal_settings = {factor_names[i]: x_opt[i] for i in range(len(factors))}
+    optimal_settings = dims.snap_to_settings(x_opt)
     
     # Predict all responses at optimum.
-    pred_df = pd.DataFrame([x_opt], columns=factor_names)
+    pred_df = dims.to_prediction_frame(x_opt)
     if model_is_coded:
         pred_df = encode_design(pred_df, factors)
     predicted_responses = {}
@@ -806,7 +1054,7 @@ def optimize_desirability(
         individual_desirabilities=individual_desirabilities,
         overall_desirability=overall_D,
         success=result.success,
-        message=result.message,
+        message=getattr(result, 'message', ''),
         n_iterations=result.nit if hasattr(result, 'nit') else 0
     )
 

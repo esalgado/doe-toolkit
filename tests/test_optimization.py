@@ -15,6 +15,7 @@ import pandas as pd
 from unittest.mock import Mock
 
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
+from src.core.full_factorial import full_factorial
 from src.core.optimization import (
     optimize_response,
     optimize_desirability,
@@ -825,3 +826,95 @@ class TestEdgeCases:
         
         with pytest.raises(ValueError, match="No model provided"):
             optimize_desirability(models, simple_factors, df)
+
+
+class TestCategoricalFactors:
+    """Optimization over mixed continuous + categorical designs."""
+
+    @staticmethod
+    def _mixed_design(seed=7):
+        """Full factorial x Continuous X1 + categorical Catalyst with a strong
+        level effect.  Catalyst 'B' is far better than 'A'."""
+        x1 = Factor("X1", FactorType.CONTINUOUS, ChangeabilityLevel.EASY,
+                    levels=[-1, 1])
+        catalyst = Factor("Catalyst", FactorType.CATEGORICAL,
+                          ChangeabilityLevel.EASY, levels=["A", "B"])
+        factors = [x1, catalyst]
+        design = full_factorial(factors, n_replicates=3, randomize=False)
+
+        rng = np.random.default_rng(seed)
+        # X1 raises response by +2 per coded unit; Catalyst B adds +10.
+        base_a = design["X1"].astype(float) * 2.0
+        level_b = (design["Catalyst"] == "B").astype(float) * 10.0
+        response = np.asarray(5.0 + base_a + level_b, dtype=float).copy()
+        response += rng.normal(0, 0.05, len(response))
+        return factors, design, response
+
+    def test_single_response_chooses_best_categorical_level(self):
+        factors, design, response = self._mixed_design()
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(["X1", "Catalyst", "X1*Catalyst"])
+
+        opt = optimize_response(
+            results, factors, objective="maximize", seed=1
+        )
+        assert opt.success
+
+        settings = opt.optimal_settings
+        # Catalyst B is strictly better (+10), so it must be chosen.
+        assert settings["Catalyst"] == "B"
+        # X1 maxed out (+1) for maximize.
+        assert settings["X1"] == pytest.approx(1, abs=0.2)
+        # Predicted response near the optimum of the linear model.
+        assert opt.predicted_response == pytest.approx(17, abs=0.5)
+
+    def test_single_response_respects_pinned_level(self):
+        factors, design, response = self._mixed_design()
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(["X1", "Catalyst", "X1*Catalyst"])
+
+        opt = optimize_response(
+            results, factors, objective="maximize", seed=1,
+            pinned_levels={"Catalyst": "A"},
+        )
+        assert opt.success
+        assert opt.optimal_settings["Catalyst"] == "A"
+        assert opt.optimal_settings["X1"] == pytest.approx(1, abs=0.2)
+        # With Catalyst A the linear optimum is 5 + 2 = 7.
+        assert opt.predicted_response == pytest.approx(7, abs=0.5)
+
+    def test_invalid_pinned_level_raises(self):
+        factors, design, response = self._mixed_design()
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(["X1", "Catalyst", "X1*Catalyst"])
+        with pytest.raises(ValueError, match="not a valid level"):
+            optimize_response(
+                results, factors, objective="maximize", seed=1,
+                pinned_levels={"Catalyst": "Z"},
+            )
+
+    def test_desirability_over_mixed_design(self):
+        factors, design, response = self._mixed_design()
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(["X1", "Catalyst", "X1*Catalyst"])
+
+        df = DesirabilityFunction(["Yield"])
+        df.add_response("Yield", "maximize", low=5, high=20)
+
+        dopt = optimize_desirability(
+            {"Yield": results}, factors, df, seed=1
+        )
+        assert dopt.success
+        assert dopt.optimal_settings["Catalyst"] == "B"
+        assert dopt.optimal_settings["X1"] == pytest.approx(1, abs=0.2)
+
+    def test_prediction_frame_hold_categoricals(self):
+        """to_prediction_frame returns labels, not raw indices."""
+        factors, _, _ = self._mixed_design()
+        from src.core.optimization import _OptimizationDims
+        dims = _OptimizationDims(factors)
+        for idx in (0, 1):
+            frame = dims.to_prediction_frame(np.array([0.0, float(idx)]))
+            assert frame["Catalyst"].iloc[0] == (
+                "A" if idx == 0 else "B"
+            )

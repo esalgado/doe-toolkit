@@ -17,12 +17,16 @@ Contents
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy import stats
+
+from src.core.factors import Factor
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +68,12 @@ class ANOVAResults:
         Adjusted R².
     rmse : float
         Root mean squared error of residuals.
+    coefficient_significance : Optional[pd.DataFrame]
+        Coefficient-level significance table (one row per fitted coefficient,
+        p-values from :attr:`fitted_model.pvalues`).
+    anova_effect_summary : Optional[pd.DataFrame]
+        Term-level ANOVA effect summary (one row per ANOVA term, p-values and
+        F-statistics sourced from :attr:`anova_table`).
     """
 
     anova_table: pd.DataFrame
@@ -78,6 +88,8 @@ class ANOVAResults:
     r_squared: float
     adj_r_squared: float
     rmse: float
+    coefficient_significance: Optional[pd.DataFrame] = None
+    anova_effect_summary: Optional[pd.DataFrame] = None
 
     def predict_from_settings(self, settings: Dict[str, object]) -> float:
         """
@@ -437,6 +449,554 @@ def _unwrap_c(segment: str) -> str:
     if segment.startswith('C(') and segment.endswith(')'):
         return segment[2:-1].strip()
     return segment
+
+
+# ---------------------------------------------------------------------------
+# Coefficient-to-term matching and effect summary builders
+#
+# These helpers live here so that both the fixed-effects path
+# (``src.core.analysis``) and the split-plot path
+# (``src.core.split_plot_analysis``) share the same term-matching logic and
+# construct the same canonical dataframes.
+#
+# Two deliberately separate tables are produced:
+#   * ``build_coefficient_significance`` — one row per fitted COEFFICIENT,
+#     p-values kept from ``fitted_model.pvalues``.
+#   * ``build_anova_effect_summary`` — one row per term-level ANOVA test,
+#     p-values and F-statistics kept from the displayed ANOVA table.
+# The mapping between the two never replaces one statistic with the other.
+# ---------------------------------------------------------------------------
+
+
+#: Centralised policy: fixed Block terms are excluded from the Bonferroni
+#: multiplicity family (``m``).  The family is intended for experimental
+#: effects, not design/nuisance terms.
+BONFERRONI_EXCLUDE_BLOCK = True
+
+
+def _strip_all_c_wrappers(label: str) -> str:
+    """Remove every patsy ``C(...)`` wrapper from a label.
+
+    Examples
+    --------
+    ``C(Egg_lot)[T.41007666]`` -> ``Egg_lot[T.41007666]``
+    """
+    return re.sub(r'C\(([^()]*)\)', r'\1', str(label))
+
+
+def _normalize_term(term) -> str:
+    """Collapse a term label to a canonical string for comparisons."""
+    return re.sub(r'\s+', '', _strip_all_c_wrappers(str(term)))
+
+
+def _term_factor_segments(term) -> List[str]:
+    """
+    Extract the ordered factor segments of a term, dropping categorical dummy
+    encodings (``Factor[T.Level]``) and interaction separators.
+    """
+    t = _normalize_term(term)
+    t = re.sub(r'\[T\..*?\]', '', t)
+    t = t.replace('*', ':')
+    m = re.match(r'I\((.+?)\s*\*\*\s*2\)', t)
+    if m:
+        return [m.group(1).strip()]
+    return [s.strip() for s in t.split(':') if s.strip()]
+
+
+def _term_sort_key(term):
+    """Order-independent key for a term (``A:B`` == ``B:A``)."""
+    return tuple(sorted(_term_factor_segments(term)))
+
+
+def _classify_term_type(term) -> str:
+    """Classify a term as main / interaction / quadratic / other."""
+    t = re.sub(r'\[T\..*?\]', '', _normalize_term(term))
+    if re.match(r'^I\(.+\)$', t):
+        return 'quadratic'
+    segs = [s for s in t.replace('*', ':').split(':') if s]
+    if len(segs) > 1:
+        return 'interaction'
+    return 'main'
+
+
+def _is_block_term(term, block_factor_names: Tuple[str, ...] = ('Block',)) -> bool:
+    """True when *term* involves one of the design/block factor names."""
+    for seg in _term_factor_segments(term):
+        if seg in block_factor_names:
+            return True
+    return False
+
+
+# Rows in an ANOVA table that never represent experimental effects.
+NON_EFFECT_ANOVA_ROWS = frozenset({
+    'Intercept', 'const', 'Residual', 'WholePlot Error', 'SubPlot Error',
+    'Whole Plot Error', 'Sub Plot Error', 'Pure Error', 'Lack of Fit',
+    'Cor Total', 'Model',
+})
+
+
+def _is_non_effect_row(term) -> bool:
+    if term in NON_EFFECT_ANOVA_ROWS:
+        return True
+    low = str(term).lower().replace(' ', '')
+    return low in {'intercept', 'residual', 'wholeplaterror', 'subplaterror',
+                   'pureerror', 'lackoffit', 'cortotal', 'model'}
+
+
+def _safe_float(value) -> Optional[float]:
+    try:
+        f = float(value)
+        return None if np.isnan(f) else f
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def coefficient_logworth(p) -> float:
+    """
+    LogWorth for a p-value with safe handling of underflow.
+
+    ``p <= 0`` / NaN yields NaN.  Otherwise ``-log10(max(p, tiny))``.
+    """
+    if p is None:
+        return np.nan
+    try:
+        p = float(p)
+    except (TypeError, ValueError):
+        return np.nan
+    if not np.isfinite(p) or p <= 0:
+        return np.nan
+    p_safe = max(p, np.finfo(float).tiny)
+    return -np.log10(p_safe)
+
+
+def find_effect_estimate_key(source: str, index: pd.Index) -> Optional[str]:
+    """
+    Map an ANOVA term / coefficient label back to a coefficient table index.
+
+    Handles patsy/statsmodels conventions:
+    - direct matches (``'Temperature'``)
+    - ``'*'`` vs ``':'`` interaction separators
+    - interaction-order normalisation (``'A:B'`` == ``'B:A'``)
+    - categorical dummies (``'Atmosphere'`` -> ``'Atmosphere[T.nitrogen]'`` or
+      ``'C(Atmosphere)[T.air]'``)
+    - nested/institution interaction dummies
+      (``'Temperature:Atmosphere'`` -> ``'Temperature:Atmosphere[T.nitrogen]'``)
+
+    Returns
+    -------
+    The matching index key, or ``None`` when no safe match exists.
+    """
+    index = list(index)
+    if source in index:
+        return source
+    patsy_form = str(source).replace('*', ':')
+    if patsy_form in index:
+        return patsy_form
+
+    src_key = _term_sort_key(source)
+    for key in index:
+        if _term_sort_key(key) == src_key:
+            return key
+
+    base = _strip_all_c_wrappers(patsy_form)
+    for key in index:
+        if key.startswith(base) or key.startswith(patsy_form):
+            return key
+    return None
+
+
+def find_parent_anova_term(coef_name: str, anova_terms) -> Optional[str]:
+    """
+    Map a fitted coefficient label to its parent ANOVA term.
+
+    Used for labelling / effect-sign recovery only.  Never replaces the
+    coefficient's own p-value with the parent term's ANOVA p-value.
+    """
+    anova_terms = list(anova_terms)
+    if coef_name in anova_terms:
+        return coef_name
+    patsy_form = str(coef_name).replace('*', ':')
+    if patsy_form in anova_terms:
+        return patsy_form
+
+    coef_key = _term_sort_key(coef_name)
+    for term in anova_terms:
+        if _term_sort_key(term) == coef_key:
+            return term
+
+    base = _normalize_term(coef_name)
+    base = re.sub(r'\[T\..*?\]', '', base).replace('*', ':')
+    for term in anova_terms:
+        if _normalize_term(term) == base:
+            return term
+    return None
+
+
+def attach_critical_limits(
+    summary: pd.DataFrame,
+    alpha: float = 0.05,
+) -> pd.DataFrame:
+    """
+    (Re)compute per-term ``t_critical`` and ``bonferroni_limit`` columns.
+
+    Residual degrees of freedom are taken per-term from ``residual_df`` so the
+    limits are correct for multi-strata (split-plot) models where different
+    terms use different error strata.
+
+    ``m`` (the Bonferroni multiplicity family size) is the number of eligible
+    experimental effects in *summary*.  Per :data:`BONFERRONI_EXCLUDE_BLOCK`,
+    fixed Block terms are excluded from ``m`` by default.  Callers should call
+    this again after filtering (e.g. hiding Block) so the limits track the
+    displayed effect set.
+    """
+    if summary is None or summary.empty:
+        return summary
+    df = summary.copy()
+    if BONFERRONI_EXCLUDE_BLOCK:
+        m = int(np.sum(~df['is_block'].astype(bool)))
+    else:
+        m = int(len(df))
+    m = max(m, 1)
+
+    t_crits, bonfs = [], []
+    for _, row in df.iterrows():
+        rd = row.get('residual_df', np.nan)
+        if rd is None:
+            t_crits.append(np.nan)
+            bonfs.append(np.nan)
+            continue
+        try:
+            rd = float(rd)
+        except (TypeError, ValueError):
+            t_crits.append(np.nan)
+            bonfs.append(np.nan)
+            continue
+        if not np.isfinite(rd) or rd <= 0:
+            t_crits.append(np.nan)
+            bonfs.append(np.nan)
+            continue
+        tc = stats.t.ppf(1 - alpha / 2, rd)
+        bc = stats.t.ppf(1 - alpha / (2 * m), rd)
+        t_crits.append(tc)
+        bonfs.append(bc)
+    df['t_critical'] = t_crits
+    df['bonferroni_limit'] = bonfs
+    return df
+
+
+def build_anova_effect_summary(
+    anova_table: Optional[pd.DataFrame],
+    effect_estimates: Optional[pd.DataFrame] = None,
+    block_factor_names: Tuple[str, ...] = ('Block',),
+    alpha: float = 0.05,
+) -> pd.DataFrame:
+    """
+    Build the canonical term-level ANOVA effect summary.
+
+    Source of truth: the displayed :attr:`anova_table` (``PR(>F)`` for
+    fixed-effects statsmodels tables, ``P`` for split-plot tables).  One row
+    per eligible ANOVA term (intercept/residual/error rows excluded).
+
+    Standardized statistic:
+    - ``df == 1``: ``sign(effect_estimate) * sqrt(F)`` (``|t| = sqrt(F)``),
+      with sign recovered from the matched coefficient when available.
+    - ``df > 1``: ``sqrt(F)`` labelled ``omnibus sqrt(F)``; multi-DF terms do
+      NOT have a single coefficient t-statistic and are never assigned a sign.
+    """
+    if anova_table is None or anova_table.empty:
+        return pd.DataFrame()
+
+    p_col = ('PR(>F)' if 'PR(>F)' in anova_table.columns
+             else 'P' if 'P' in anova_table.columns else None)
+    has_stratum = 'Stratum' in anova_table.columns
+    ss_col = 'sum_sq' if 'sum_sq' in anova_table.columns else 'SS'
+
+    def residual_df_for(stratum) -> Optional[float]:
+        if not has_stratum:
+            if 'Residual' in anova_table.index:
+                return _safe_float(anova_table.loc['Residual', 'df'])
+            return None
+        err_row = ('WholePlot Error' if stratum == 'Whole-Plot'
+                   else 'SubPlot Error')
+        if err_row in anova_table.index:
+            return _safe_float(anova_table.loc[err_row, 'df'])
+        return None
+
+    coef_index = effect_estimates.index if effect_estimates is not None else None
+
+    rows = []
+    for term, row in anova_table.iterrows():
+        if _is_non_effect_row(term):
+            continue
+
+        df = _safe_int(row.get('df'))
+        F = _safe_float(row.get('F'))
+        p = _safe_float(row.get(p_col)) if p_col else None
+        stratum = row.get('Stratum') if has_stratum else None
+        residual_df = residual_df_for(stratum)
+
+        effect_estimate = np.nan
+        effect_sign = np.nan
+        standardized = np.nan
+        stat_type = 'sqrt(F) not applicable'
+        if df is not None and F is not None and F >= 0:
+            if df == 1:
+                key = None
+                if coef_index is not None and len(coef_index):
+                    key = find_effect_estimate_key(term, coef_index)
+                if key is not None:
+                    try:
+                        coeff = float(effect_estimates.loc[key, 'Coefficient'])
+                    except (KeyError, TypeError, ValueError):
+                        coeff = np.nan
+                    if np.isfinite(coeff):
+                        effect_estimate = coeff
+                        effect_sign = np.sign(coeff)
+                standardized = np.sqrt(float(F))
+                if effect_sign is not None and np.isfinite(effect_sign):
+                    standardized = effect_sign * standardized
+                stat_type = '|t| = sqrt(F)'
+            elif df > 1:
+                standardized = np.sqrt(float(F))
+                stat_type = 'omnibus sqrt(F)'
+        elif df is None or F is None:
+            stat_type = 'unavailable'
+
+        rows.append({
+            'term': term,
+            'normalized_term': _normalize_term(term),
+            'term_type': _classify_term_type(term),
+            'sum_sq': _safe_float(row.get(ss_col)),
+            'df': df,
+            'F': F,
+            'p_value': p,
+            'effect_estimate': effect_estimate,
+            'effect_sign': effect_sign,
+            'standardized_statistic': standardized,
+            'standardized_statistic_type': stat_type,
+            'residual_df': residual_df,
+            'is_block': _is_block_term(term, block_factor_names),
+            'source': 'displayed term-level ANOVA table',
+        })
+
+    summary = pd.DataFrame(rows)
+    if not summary.empty:
+        summary = summary.set_index('term', drop=False)
+        summary = attach_critical_limits(summary, alpha=alpha)
+    return summary
+
+
+def build_coefficient_significance(
+    effect_estimates: Optional[pd.DataFrame],
+    anova_table: Optional[pd.DataFrame] = None,
+    block_factor_names: Tuple[str, ...] = ('Block',),
+) -> pd.DataFrame:
+    """
+    Build the canonical coefficient-level significance table.
+
+    One row per fitted coefficient (intercept excluded), p-values kept from
+    the fitted model's coefficient table.  ``parent_anova_term`` is populated
+    for labelling only and never replaces the coefficient's own statistics.
+    """
+    if effect_estimates is None or effect_estimates.empty:
+        return pd.DataFrame()
+
+    anova_terms = list(anova_table.index) if (anova_table is not None
+                                              and not anova_table.empty) else []
+
+    rows = []
+    for name, row in effect_estimates.iterrows():
+        if name in ('Intercept', 'const'):
+            continue
+        coeff = _safe_float(row.get('Coefficient'))
+        p = _safe_float(row.get('p_value'))
+        parent = find_parent_anova_term(name, anova_terms) if anova_terms else None
+        parent_df = None
+        if parent and anova_table is not None and parent in anova_table.index:
+            parent_df = _safe_int(anova_table.loc[parent, 'df'])
+        rows.append({
+            'coefficient_name': name,
+            'normalized_coefficient_name': _normalize_term(name),
+            'parent_anova_term': parent,
+            'parent_anova_df': parent_df,
+            'coefficient_estimate': coeff,
+            'standard_error': _safe_float(row.get('Std_Error')),
+            't_value': _safe_float(row.get('t_value')),
+            'p_value': p,
+            'logworth': coefficient_logworth(p),
+            'sign': np.sign(coeff) if coeff is not None and np.isfinite(coeff) else np.nan,
+            'is_block': _is_block_term(name, block_factor_names),
+            'source': 'Fitted-model coefficient test',
+        })
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Coded-to-actual-unit coefficient conversion
+# ---------------------------------------------------------------------------
+
+
+def _parse_index_term(term_name: str) -> Tuple[List[str], str]:
+    """
+    Parse a statsmodels/patsy coefficient index label into factor names and
+    operator.
+
+    Handles the following patsy output conventions:
+    - ``'Intercept'`` / ``'const'``  → ``([], '')``
+    - ``'A'``                         → ``(['A'], '')``
+    - ``'A[T.level]'``                → ``(['A'], '')``  (categorical dummy)
+    - ``'A:B'``                        → ``(['A', 'B'], ':')``
+    - ``'I(A ** 2)'``                 → ``(['A'], '**')``
+
+    Parameters
+    ----------
+    term_name : str
+        A single index label from ``fitted_model.params``.
+
+    Returns
+    -------
+    factor_names : List[str]
+        Extracted factor name(s).
+    operator : str
+        ``':'`` for interactions, ``'**'`` for quadratics, ``''`` otherwise.
+    """
+    if term_name in ("Intercept", "const"):
+        return [], ""
+
+    quad_match = re.match(r"I\((.+?)\s*\*\*\s*2\)", term_name)
+    if quad_match:
+        return [quad_match.group(1).strip()], "**"
+
+    if ":" in term_name and not term_name.startswith("I("):
+        parts = term_name.split(":")
+        clean = [re.sub(r"\[T\..*?\]", "", p).strip() for p in parts]
+        return clean, ":"
+
+    cat_match = re.match(r"^([^\[]+)\[T\.", term_name)
+    if cat_match:
+        return [cat_match.group(1).strip()], ""
+
+    return [term_name.strip()], ""
+
+
+def compute_actual_coefficients(
+    effect_estimates: pd.DataFrame,
+    factors: List[Factor],
+) -> pd.DataFrame:
+    """
+    Convert coded-unit coefficients and standard errors to actual units.
+
+    The model is fit on coded factors where each continuous factor ``x`` is
+    transformed via ``x_coded = (x_actual - center) / half_range``.  This
+    function inverts that scaling so coefficients reflect original units.
+
+    Transformation rules
+    --------------------
+    - **Intercept**: adjusted for all centering shifts.
+    - **Main effect** (continuous): ``b_actual = b_coded / half_range``
+    - **Interaction A:B** (both continuous): ``b_actual = b_coded / (hr_A*hr_B)``
+    - **Quadratic I(A**2)**: ``b_actual = b_coded / hr_A**2``
+    - **Categorical / discrete-numeric** terms: no single scale exists; the
+      corresponding ``Actual_Coefficient`` / ``Actual_Std_Error`` are set to
+      NaN (an explicit "unavailable" value) rather than a misleading number.
+
+    Parameters
+    ----------
+    effect_estimates : pd.DataFrame
+        Coefficient table with at minimum ``Coefficient`` and ``Std_Error``
+        columns and term names as the index (patsy convention).
+    factors : List[Factor]
+        Factor definitions used to retrieve ``min_value`` / ``max_value``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy with added ``Actual_Coefficient`` and ``Actual_Std_Error``.
+    """
+    scale: Dict[str, Tuple[float, float]] = {}
+    for f in factors:
+        if f.is_continuous() and f.min_value is not None and f.max_value is not None:
+            center = (f.min_value + f.max_value) / 2.0
+            half_range = (f.max_value - f.min_value) / 2.0
+            if half_range > 0:
+                scale[f.name] = (center, half_range)
+
+    result = effect_estimates.copy()
+    actual_coefs: List[float] = []
+    actual_ses: List[float] = []
+
+    intercept_adjustment = 0.0
+    for term_name in effect_estimates.index:
+        if term_name in ("Intercept", "const"):
+            continue
+        _factors, _op = _parse_index_term(term_name)
+        if _op == "" and len(_factors) == 1:
+            fname = _factors[0]
+            if fname in scale:
+                center, half_range = scale[fname]
+                b_coded = float(effect_estimates.loc[term_name, "Coefficient"])
+                intercept_adjustment += b_coded * (-center / half_range)
+
+    for term_name in effect_estimates.index:
+        b_coded = float(effect_estimates.loc[term_name, "Coefficient"])
+        se_coded = float(effect_estimates.loc[term_name, "Std_Error"])
+
+        if term_name in ("Intercept", "const"):
+            actual_coefs.append(b_coded + intercept_adjustment)
+            actual_ses.append(se_coded)
+            continue
+
+        factor_names_parsed, op = _parse_index_term(term_name)
+
+        if op == "**":
+            fname = factor_names_parsed[0]
+            if fname in scale:
+                _, half_range = scale[fname]
+                s = 1.0 / (half_range ** 2)
+                actual_coefs.append(b_coded * s)
+                actual_ses.append(se_coded * s)
+            else:
+                actual_coefs.append(float("nan"))
+                actual_ses.append(float("nan"))
+        elif op == ":":
+            if len(factor_names_parsed) == 2:
+                fa, fb = factor_names_parsed
+                if fa in scale and fb in scale:
+                    _, hr_a = scale[fa]
+                    _, hr_b = scale[fb]
+                    s = 1.0 / (hr_a * hr_b)
+                    actual_coefs.append(b_coded * s)
+                    actual_ses.append(se_coded * s)
+                else:
+                    actual_coefs.append(float("nan"))
+                    actual_ses.append(float("nan"))
+            else:
+                actual_coefs.append(float("nan"))
+                actual_ses.append(float("nan"))
+        elif op == "":
+            fname = factor_names_parsed[0]
+            if fname in scale:
+                _, half_range = scale[fname]
+                s = 1.0 / half_range
+                actual_coefs.append(b_coded * s)
+                actual_ses.append(se_coded * s)
+            else:
+                actual_coefs.append(float("nan"))
+                actual_ses.append(float("nan"))
+        else:
+            actual_coefs.append(float("nan"))
+            actual_ses.append(float("nan"))
+
+    result["Actual_Coefficient"] = actual_coefs
+    result["Actual_Std_Error"] = actual_ses
+    return result
 
 
 # ---------------------------------------------------------------------------
