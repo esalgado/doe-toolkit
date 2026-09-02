@@ -556,3 +556,175 @@ class ANOVAAnalysis:
         new_terms = [t for t in new_terms if not (t in seen or seen.add(t))]
         
         return self.fit(new_terms, enforce_hierarchy_flag)
+
+    def coded_single_df_coefficients(self, alpha: float = 0.05) -> Dict[str, float]:
+        """
+        Design-Expert style coded regression coefficients for single-df terms.
+
+        Design Expert reports half-normal effect magnitudes using the *coded*
+        factor scale (numeric factors re-encoded to [-1, +1]).  The main fit
+        keeps numeric factors in natural units, so `AnovaAnalysis` re-fits the
+        active model here with numeric columns re-encoded ``(x - mid) / half``;
+        each single-df slope is then directly comparable to Design Expert's
+        coded coefficient (for this design, ``% egg yolk`` -> ~5.33).
+
+        Interaction terms whose full-model p-value exceeds ``alpha`` are
+        dropped from the refit, mirroring Design Expert's automatic model
+        reduction when reporting coefficients (the ANOVA table still reflects
+        the full model).  Blocking is retained exactly as in the main fit.
+
+        Parameters
+        ----------
+        alpha : float
+            Significance threshold for retaining interaction terms in the
+            refit.
+
+        Returns
+        -------
+        Dict[str, float]
+            Mapping ``{base_term: coded_coefficient}`` for every single-df
+            term in the current model.  Multi-df terms, the intercept and
+            nuisance (Block) terms are omitted.  An empty dict is returned
+            whenever the coded refit is not well defined (split-plot /
+            mixed-block / transform models, or no fitted model).
+        """
+        if self.current_model is None or self.current_results is None:
+            return {}
+        if self.current_results.is_split_plot or self.block_as_random:
+            return {}
+        if self._has_transform_terms(self.current_model):
+            return {}
+
+        refit = self._code_refit(alpha)
+        if refit is None:
+            return {}
+        fitted, reduced = refit
+        params = {
+            self._strip_c_wrappers(str(k)): float(v)
+            for k, v in fitted.params.items()
+        }
+
+        result: Dict[str, float] = {}
+        for term in reduced:
+            base = term.replace('*', ':')
+            matches = {
+                key: value
+                for key, value in params.items()
+                if re.sub(r'\[[^\]]*\]', '', key) == base
+            }
+            if len(matches) != 1:
+                continue
+            key, value = next(iter(matches.items()))
+            if '[' in key:
+                result[base] = value / 2.0
+            else:
+                result[base] = value
+        return result
+
+    def _code_refit(self, alpha: float = 0.05):
+        """
+        Re-fit the active model with numeric factors re-encoded to the coded
+        [-1, +1] scale used by Design Expert.  Interaction terms whose
+        full-model p-value exceeds ``alpha`` are dropped (mirroring Design
+        Expert's automatic model reduction when reporting coefficients; the
+        ANOVA table still reflects the full model).  Blocking is retained
+        exactly as in the main fit.
+
+        Returns
+        -------
+        tuple or None
+            ``(fitted, reduced)`` where *fitted* is the statsmodels OLS
+            result on the coded data and *reduced* is the list of retained
+            model terms.  ``None`` if the coded refit is not well defined.
+        """
+        model_terms = [t for t in self.current_model if t != '1']
+        anova = self.current_results.anova_table
+        if model_terms and anova is not None and not anova.empty:
+            p_col = next(
+                (c for c in ('PR(>F)', 'F_p_value', 'p_value')
+                 if c in anova.columns),
+                None,
+            )
+        else:
+            p_col = None
+
+        mains = [t for t in model_terms if '*' not in t]
+        interactions = [t for t in model_terms if '*' in t]
+        reduced = list(mains)
+        for term in interactions:
+            base = term.replace('*', ':')
+            p = None
+            if p_col is not None and base in anova.index:
+                p = anova.loc[base, p_col]
+            if p is None or pd.isna(p) or float(p) <= alpha:
+                reduced.append(term)
+        if not reduced:
+            return None
+
+        coded = self.data.copy()
+        for factor in self.factors:
+            if not (factor.is_continuous() or factor.is_discrete_numeric()):
+                continue
+            lo, hi = factor.min_value, factor.max_value
+            if lo is None or hi is None or not (hi > lo):
+                continue
+            if factor.name not in coded.columns:
+                continue
+            try:
+                values = coded[factor.name].astype(float)
+            except (TypeError, ValueError):
+                continue
+            half = (hi - lo) / 2.0
+            coded[factor.name] = (values - (lo + hi) / 2.0) / half
+
+        blocking = bool(self.design_structure.get('has_blocking'))
+        formula_terms = [
+            t for t in self._wrap_categorical_terms(reduced) if t != '1'
+        ]
+        rhs = ' + '.join(formula_terms) if formula_terms else '1'
+        formula = f"{self.response_name} ~ {rhs}"
+        warnings.simplefilter('ignore')
+        if blocking:
+            coded['Block'] = coded['Block'].astype(str)
+            formula += " + Block"
+        try:
+            fitted = ols(formula, data=coded).fit()
+        except Exception:
+            fitted = None
+        finally:
+            warnings.resetwarnings()
+        if fitted is None:
+            return None
+        return fitted, reduced
+
+    def coded_effect_se(self, alpha: float = 0.05) -> Optional[float]:
+        """
+        Standard error of a coded ([-1, +1]) single-df effect, from the coded
+        reference refit used for the half-normal panel: ``sqrt(2 * MSE / N)``.
+
+        This is the fully data-driven slope for the Design-Expert style
+        reference diagonal (there are no fitted per-experiment constants),
+        so it transfers to any design and keeps a significant term standing
+        clearly off the line.
+
+        Returns
+        -------
+        Optional[float]
+            The coded-effect standard error, or ``None`` when the coded refit
+            is not well defined.
+        """
+        if self.current_model is None or self.current_results is None:
+            return None
+        if self.current_results.is_split_plot or self.block_as_random:
+            return None
+        if self._has_transform_terms(self.current_model):
+            return None
+        refit = self._code_refit(alpha)
+        if refit is None:
+            return None
+        fitted, _ = refit
+        n = fitted.nobs
+        scale = float(getattr(fitted, 'scale', np.nan))
+        if not bool(n) or not np.isfinite(scale) or scale <= 0:
+            return None
+        return float(np.sqrt(2.0 * scale / float(n)))

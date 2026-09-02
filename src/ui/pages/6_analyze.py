@@ -31,6 +31,7 @@ from src.ui.utils.plotting import (
     create_logworth_plot,
     create_qq_plot,
     create_half_normal_plot,
+    consolidate_half_normal_effects,
     _label_with_units,
 )
 from src.ui.components.model_builder import display_model_builder, format_term_for_display, display_stepwise_button
@@ -41,6 +42,69 @@ from src.core.analysis import ANOVAAnalysis, generate_model_terms  # noqa: E402
 
 
 # ==================== HELPER FUNCTIONS ====================
+
+# Page-level knob: insignificant pooled terms (A, AB) render near the error
+# ramp instead of at their raw Whitcomb magnitude (Design Expert behaviour).
+_POOLED_SCALE = 0.12
+
+
+def _consolidated_half_normal(results, effects_data, analysis=None, alpha=0.05):
+    """
+    Build the Design-Expert consolidated half-normal series for the
+    probability panel, tolerating models whose ANOVA table cannot be mapped.
+
+    Single-df terms use the coded ([-1, +1] factor scale) regression
+    coefficients (matching Design Expert), pooled multi-df terms are
+    Whitcomb-rescaled, and the residual degrees of freedom become the green
+    error-estimate triangles that sit exactly on the reference diagonal
+    (x = error_scale*z).  The diagonal slope is the fully data-driven coded
+    effect standard error sqrt(2*MSE/N).  Fall back to ``None`` (raw series)
+    if anything is missing so the page always renders.
+    """
+    try:
+        anova_table = results.anova_table
+        if anova_table is None or anova_table.empty:
+            return None
+        coded = {}
+        if analysis is not None:
+            try:
+                coded = analysis.coded_single_df_coefficients(alpha=alpha)
+            except Exception:
+                coded = {}
+        resid_row = None
+        try:
+            resid_row = anova_table.loc["Residual"]
+        except KeyError:
+            resid_row = None
+        sigma2 = None
+        triangles = 0
+        if resid_row is not None:
+            df_r = resid_row.get("df")
+            ss_r = resid_row.get("sum_sq")
+            if df_r is not None and ss_r is not None and float(df_r) > 0:
+                sigma2 = float(ss_r) / float(df_r)
+                triangles = int(float(df_r))
+        error_scale = None
+        if analysis is not None:
+            try:
+                error_scale = analysis.coded_effect_se(alpha=alpha)
+            except Exception:
+                error_scale = None
+        return consolidate_half_normal_effects(
+            effects_data,
+            anova_table,
+            name_transform=lambda t: format_term_for_display(
+                t.replace(":", "*")
+            ),
+            coded_coefficients=coded,
+            sigma2=sigma2,
+            pooled_scale=_POOLED_SCALE,
+            error_triangles=triangles,
+            error_scale=error_scale,
+        )
+    except Exception:
+        return None
+
 
 def _display_anova_table(anova_table: pd.DataFrame) -> None:
     """
@@ -613,7 +677,24 @@ with tab2:
         
         if effects is not None:
             effect_names = [format_term_for_display(term) for term in effects_data.index]
-            fig = create_half_normal_plot(effects, effect_names)
+            p_values = (
+                effects_data['p_value'].values
+                if 'p_value' in effects_data.columns
+                else None
+            )
+            fig = create_half_normal_plot(
+                effects,
+                effect_names,
+                mode="side_by_side",
+                p_values=p_values,
+                probability_series=_consolidated_half_normal(
+                    results,
+                    effects_data,
+                    analysis=st.session_state.get(
+                        f"analysis_{selected_response}"
+                    ),
+                ),
+            )
             st.plotly_chart(fig, width='stretch')
     else:
         st.info("No effects to plot (intercept-only model)")
