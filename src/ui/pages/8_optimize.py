@@ -132,7 +132,7 @@ if optimization_mode == 'single':
     factor_constraints = {}
     pinned_levels = {}
     for factor in factors:
-        if factor.is_continuous():
+        if factor.is_continuous() or factor.is_discrete_numeric():
             col1, col2 = st.columns(2)
 
             with col1:
@@ -365,7 +365,7 @@ elif optimization_mode == 'desirability':
         with st.expander("🔧 Factor Bounds (optional)"):
             factor_bounds_d: Dict[str, tuple] = {}
             for factor in factors:
-                if factor.is_continuous():
+                if factor.is_continuous() or factor.is_discrete_numeric():
                     bc1, bc2 = st.columns(2)
                     with bc1:
                         bmin = st.number_input(

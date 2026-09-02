@@ -184,6 +184,10 @@ class _OptimizationDims:
         self.integrality: List[int] = []  # 1 == integer dim (categorical index)
         self._categorical_index: Dict[str, int] = {}
         self._has_categorical = False
+        # Non-optimizable design columns the fitted model formula references
+        # (e.g. ``Block``). They are injected into the prediction frame at a
+        # fixed reference value so the optimizer can ignore their influence.
+        self.extra_columns: Dict[str, object] = {}
 
         for i, f in enumerate(factors):
             if f.is_continuous() or f.is_discrete_numeric():
@@ -217,28 +221,40 @@ class _OptimizationDims:
 
         Continuous/discrete dims keep their real values; categorical dims are
         snapped to the nearest level index and replaced with the declared
-        level label so the model formula can form its dummies.
+        level label so the model formula can form its dummies.  Any
+        non-optimizable columns required by the model (e.g. ``Block``) are
+        injected at their fixed reference value via ``extra_columns``.
         """
         row = {}
         for i, f in enumerate(self.factors):
-            if f.is_continuous() or f.is_discrete_numeric():
+            if f.is_continuous():
                 row[f.name] = float(x[i])
+            elif f.is_discrete_numeric():
+                row[f.name] = _nearest_level(x[i], f.levels)
             else:
                 idx = int(round(float(x[i])))
                 idx = int(np.clip(idx, 0, len(f.levels) - 1))
                 row[f.name] = f.levels[idx]
-        return pd.DataFrame([row], columns=self.names)
+        row.update(self.extra_columns)
+        return pd.DataFrame([row], columns=self.names + list(self.extra_columns))
 
     def snap_to_settings(self, x: np.ndarray) -> Dict[str, object]:
         """Map an optimizer vector to human-readable factor settings."""
         settings = {}
         for i, f in enumerate(self.factors):
-            if f.is_continuous() or f.is_discrete_numeric():
+            if f.is_continuous():
                 settings[f.name] = float(x[i])
+            elif f.is_discrete_numeric():
+                settings[f.name] = _nearest_level(x[i], f.levels)
             else:
                 idx = int(np.clip(round(float(x[i])), 0, len(f.levels) - 1))
                 settings[f.name] = f.levels[idx]
         return settings
+
+
+def _nearest_level(value: float, levels) -> float:
+    """Snap *value* to the nearest declared level for discrete factors."""
+    return min(levels, key=lambda lv: abs(float(lv) - value))
 
 
 def _pinned_categorical_defaults(factors: List[Factor]) -> Dict[str, object]:
@@ -248,6 +264,58 @@ def _pinned_categorical_defaults(factors: List[Factor]) -> Dict[str, object]:
         for f in factors
         if f.is_categorical()
     }
+
+
+# Non-optimizable design columns that may appear in a fitted model's formula
+# but are not controlled by the optimizer. They are pinned to a reference
+# level in the prediction frame so their influence is ignored.
+_NUISANCE_COLUMNS = ('Block', 'WholePlot', 'VeryHardPlot')
+
+
+def _nuisance_columns_for_model(fitted_model, factors: List[Factor]) -> Dict[str, object]:
+    """Return extra prediction columns required by *fitted_model*.
+
+    A blocked (or split-plot) design appends nuisance terms such as ``Block``
+    to its formula. The optimizer's prediction frame must contain those
+    columns for patsy to build the design matrix. Each nuisance column is set
+    to its reference (first) level so its coefficient contributes zero — the
+    block/whole-plot effect is effectively ignored, which is the desired
+    behaviour for optimization.
+
+    Parameters
+    ----------
+    fitted_model : statsmodels fitted model (OLSM/OLSResults)
+        The fitted model whose formula references the nuisance columns.
+    factors : List[Factor]
+        Optimizable factors. Columns that name a factor are skipped.
+
+    Returns
+    -------
+    Dict[str, object]
+        Map of nuisance column name -> reference level (or empty if none).
+    """
+    factor_names = {f.name for f in factors}
+    model = getattr(fitted_model, 'model', fitted_model)
+    frame = getattr(getattr(model, 'data', None), 'frame', None)
+
+    try:
+        exog_names = list(getattr(model, 'exog_names', ()) or ())
+    except Exception:
+        exog_names = []
+
+    needed = {}
+    for base in (n.split('[')[0].strip() for n in exog_names):
+        if base in factor_names or base in ('Intercept', 'const'):
+            continue
+        if base in _NUISANCE_COLUMNS:
+            # Reference level = first distinct value in the fit frame.
+            if frame is not None and base in frame.columns:
+                levels = sorted(set(frame[base].dropna().tolist()))
+                if levels:
+                    needed[base] = levels[0]
+            else:
+                needed[base] = None
+    return needed
 
 
 def optimize_response(
@@ -320,6 +388,7 @@ def optimize_response(
     model = anova_results.fitted_model
 
     dims = _OptimizationDims(factors)
+    dims.extra_columns = _nuisance_columns_for_model(model, factors)
     factor_names = dims.names
     pinned_levels = dict(pinned_levels or {})
 
@@ -916,6 +985,12 @@ def optimize_desirability(
     
     from src.core.coding import encode_design
     dims = _OptimizationDims(factors)
+    # Merge nuisance columns across every fitted response model. All models
+    # share the same design, so reference levels agree; use the first one.
+    merged: Dict[str, object] = {}
+    for anova_results in anova_results_dict.values():
+        merged.update(_nuisance_columns_for_model(anova_results.fitted_model, factors))
+    dims.extra_columns = merged
     factor_names = dims.names
     pinned_levels = dict(pinned_levels or {})
 
