@@ -37,6 +37,7 @@ from src.ui.components.model_builder import display_model_builder, format_term_f
 from src.ui.components.diagnostics_display import display_diagnostics_tab
 from src.ui.components.lof_testing import display_lack_of_fit_test
 from src.ui.components.profiler_display import display_profiler_tab
+from src.ui.components.interaction_display import display_interaction_plot_tab
 from src.core.analysis import ANOVAAnalysis, generate_model_terms  # noqa: E402
 
 
@@ -340,9 +341,9 @@ _response_units_map = {
 _factor_units_map = {f.name: f.units for f in factors}
 current_response_units = _response_units_map.get(selected_response)
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Model Fit", "📉 Effects & Residuals",
-    "🔍 Design Diagnostics", "📈 Profiler"
+    "🔍 Design Diagnostics", "📈 Profiler", "🕸️ Interaction Plots"
 ])
 
 with tab1:
@@ -645,6 +646,22 @@ with tab4:
         results=results,
         factors=factors,
         format_term_for_display=format_term_for_display,
+        response_units=current_response_units,
+    )
+with tab5:
+    # Interaction plots require a fitted model for the significance overlay.
+    if selected_response not in st.session_state['fitted_models']:
+        st.warning("Please fit a model first")
+        st.stop()
+
+    interaction_results = st.session_state['fitted_models'][selected_response]
+
+    display_interaction_plot_tab(
+        selected_response=selected_response,
+        design=design_filtered,
+        response=response_filtered,
+        factors=factors,
+        results=interaction_results,
         response_units=current_response_units,
     )
 st.divider()

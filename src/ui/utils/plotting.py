@@ -34,6 +34,21 @@ PLOT_COLORS: Dict[str, str] = {
     "sigma3": "#FF6347",  # Tomato red for 3σ
 }
 
+# Qualitative palette for categorical factor levels (one colour per line).
+# Mirrors the Plotly default 10-colour cycle so it stays consistent with the
+# rest of PLOT_COLORS.
+QUALITATIVE_COLORS: List[str] = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+]
+
+# Sequential palette for numeric factor levels, mapped by rank so the
+# gradient order always matches the numeric ordering of the levels.
+SEQUENTIAL_COLORS: List[str] = [
+    "#1f77b4", "#3182bd", "#6baed6", "#9ecae1",
+    "#fd8d3c", "#e6550d", "#d62728",
+]
+
 
 def apply_plot_style(fig: go.Figure) -> go.Figure:
     """
@@ -1162,5 +1177,299 @@ def create_3d_surface_plot(
         ),
         height=600,
     )
+
+    return apply_plot_style(fig)
+
+def interaction_stats(
+    f1_name: str,
+    f2_name: str,
+    design: pd.DataFrame,
+    response: np.ndarray,
+) -> pd.DataFrame:
+    """
+    Aggregate per-combination response statistics for an interaction plot.
+
+    For every observed combination of factor ``f1`` x ``f2`` this returns one
+    row with the mean response, sample standard deviation, replicate count,
+    standard error of the mean, and a 95% confidence interval for the mean.
+
+    Combinations with a missing (NaN) response are dropped; a combination with
+    a single replicate yields ``std = sem = 0`` and a CI collapsed to the mean.
+
+    Parameters
+    ----------
+    f1_name : str
+        Name of the x-axis factor column.
+    f2_name : str
+        Name of the line-encoding factor column.
+    design : pd.DataFrame
+        Design data (natural units) containing at least ``f1_name`` and
+        ``f2_name``.
+    response : np.ndarray
+        Response values aligned with ``design`` rows.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns ``[f1_name, f2_name, mean, std, n, sem, ci_lower, ci_upper]``.
+
+    Examples
+    --------
+    >>> stats = interaction_stats('A', 'B', design, response)
+    """
+    df = pd.DataFrame({
+        f1_name: np.asarray(design[f1_name].values),
+        f2_name: np.asarray(design[f2_name].values),
+        'response': np.asarray(response, dtype=float),
+    })
+    # Missing responses are excluded from the means.
+    df = df.dropna(subset=['response'])
+
+    grouped = df.groupby([f1_name, f2_name], sort=False)['response']
+    mean = grouped.mean().rename('mean').reset_index()
+    counts = grouped.size().rename('n').reset_index()
+    std = grouped.std(ddof=1).rename('std').reset_index()
+    sem = grouped.sem().rename('sem').reset_index()
+
+    result = mean.merge(counts, on=[f1_name, f2_name])
+    result = result.merge(std, on=[f1_name, f2_name])
+    result = result.merge(sem, on=[f1_name, f2_name])
+
+    result['mean'] = result['mean'].astype(float)
+    result['std'] = result['std'].fillna(0.0)
+    result['sem'] = result['sem'].fillna(0.0)
+    result['n'] = result['n'].astype(int)
+
+    # 95% CI for the mean using a t-distribution; with a single replicate
+    # there is no spread so the interval collapses onto the mean.
+    tcrit = np.where(
+        result['n'] > 1,
+        stats.t.ppf(0.975, df=np.clip(result['n'] - 1, 1, None)),
+        0.0,
+    )
+    result['ci_lower'] = result['mean'] - tcrit * result['sem']
+    result['ci_upper'] = result['mean'] + tcrit * result['sem']
+
+    return result
+
+
+def _sorted_levels(values, is_categorical: bool):
+    """Return the ordered set of level values for a factor column.
+
+    Categorical levels are sorted lexicographically to give a stable order;
+    numeric levels are sorted numerically so the axis/colour gradient follows
+    the actual values, not their string representation.
+    """
+    unique = list(dict.fromkeys(str(v) for v in values))
+    if is_categorical:
+        return sorted(unique)
+    numeric = []
+    for v in unique:
+        try:
+            numeric.append(float(v))
+        except (TypeError, ValueError):
+            numeric.append(float('nan'))
+    return sorted(
+        numeric,
+        key=lambda x: (np.isnan(x), float('inf') if np.isnan(x) else x),
+    )
+
+
+def create_interaction_plot(
+    stats: pd.DataFrame,
+    f1_name: str,
+    f2_name: str,
+    f1_is_categorical: bool,
+    f2_is_categorical: bool,
+    response_name: str,
+    response_units: Optional[str] = None,
+    f1_units: Optional[str] = None,
+    f2_units: Optional[str] = None,
+    error_mode: str = "none",
+    p_value: Optional[float] = None,
+    interaction_present: bool = True,
+) -> go.Figure:
+    """
+    Create an interaction plot (Stat-Ease / Design-Expert style).
+
+    One line is drawn for each level of ``f2`` spanning the levels of ``f1``
+    on the x-axis.  Parallel lines indicate little interaction while
+    crossing / non-parallel lines indicate an interaction.
+
+    Parameters
+    ----------
+    stats : pd.DataFrame
+        Output of :func:`interaction_stats`.
+    f1_name : str
+        Name of the x-axis factor.
+    f2_name : str
+        Name of the line-encoding (grouping) factor.
+    f1_is_categorical / f2_is_categorical : bool
+        Whether each factor is categorical (affects axis type, colouring and
+        level ordering).  Categorical levels are never coerced to numbers.
+    response_name : str
+        Display name of the response for the y-axis/tooltip.
+    response_units / f1_units / f2_units : str, optional
+        Units appended to axis labels.
+    error_mode : str
+        One of ``"none"`` (mean only), ``"sd"`` (mean +/- SD), ``"ci"``
+        (mean +/- 95% CI).  Error bars are omitted for single-replicate
+        combinations.
+    p_value : float, optional
+        Interaction term p-value from the fitted ANOVA, if available.
+    interaction_present : bool
+        Whether the ``f1:f2`` interaction term is present in the fitted model.
+        When ``False`` the significance subtitle reports "not in model".
+
+    Returns
+    -------
+    go.Figure
+        The interaction plot.
+
+    Examples
+    --------
+    >>> stats = interaction_stats('A', 'B', design, response)
+    >>> fig = create_interaction_plot(stats, 'A', 'B', True, False, 'Yield')
+    """
+# Ordered level lists, matching the order used for grouping/colouring.
+    f1_levels = _sorted_levels(stats[f1_name].values, f1_is_categorical)
+    f2_levels = _sorted_levels(stats[f2_name].values, f2_is_categorical)
+
+    # Map each numeric level to its string representation for group joins.
+    f1_str = {k: str(k) for k in f1_levels}
+    f2_str = {k: str(k) for k in f2_levels}
+    stats = stats.copy()
+    stats[f1_name] = stats[f1_name].map(lambda v: str(v))
+    stats[f2_name] = stats[f2_name].map(lambda v: str(v))
+
+    # Colour assignment per grouping level.
+    if f2_is_categorical:
+        line_colors = {
+            str(level): QUALITATIVE_COLORS[i % len(QUALITATIVE_COLORS)]
+            for i, level in enumerate(f2_levels)
+        }
+    else:
+        line_colors = {}
+        n = max(len(f2_levels), 1)
+        for i, level in enumerate(f2_levels):
+            color = SEQUENTIAL_COLORS[
+                int(round(i * (len(SEQUENTIAL_COLORS) - 1) / (n - 1)))
+            ] if n > 1 else SEQUENTIAL_COLORS[0]
+            line_colors[str(level)] = color
+
+    # X-axis: category axis for categorical factor, linear for numeric.
+    x_is_categorical = f1_is_categorical
+    x_values = [f1_str[l] for l in f1_levels]
+    if x_is_categorical:
+        x_values = [str(v) for v in x_values]
+    else:
+        x_values = [float(v) for v in x_values]
+
+    f1_label = _label_with_units(f1_name, f1_units)
+    f2_label = _label_with_units(f2_name, f2_units)
+    response_label = _label_with_units(response_name, response_units)
+
+    fig = go.Figure()
+
+    for level in f2_levels:
+        lvl_str = str(level)
+        subset = stats[stats[f2_name] == lvl_str]
+        # Align with the x-level order (fill missing combos with None).
+        y = []
+        sd_vals = []
+        n_vals = []
+        for x_lvl in f1_levels:
+            row = subset[subset[f1_name] == str(x_lvl)]
+            if row.empty:
+                y.append(None)
+                sd_vals.append(None)
+                n_vals.append(None)
+                continue
+            r = row.iloc[0]
+            y.append(None if pd.isna(r['mean']) else float(r['mean']))
+            sd_vals.append(
+                None if pd.isna(r['std']) else float(r['std'])
+            )
+            n_vals.append(int(r['n']))
+
+        error_y = None
+        if error_mode in ("sd", "ci") and len(f2_levels) > 0:
+            arrays = []
+            for idx, x_lvl in enumerate(f1_levels):
+                row = subset[subset[f1_name] == str(x_lvl)]
+                if row.empty or int(row.iloc[0]['n']) < 2:
+                    arrays.append(0.0)
+                elif error_mode == "sd":
+                    arrays.append(float(row.iloc[0]['std']))
+                else:
+                    arrays.append(float(
+                        row.iloc[0]['ci_upper'] - row.iloc[0]['mean']
+                    ))
+            error_y = dict(
+                type="data",
+                symmetric=True,
+                array=arrays,
+                thickness=1,
+                width=4,
+            )
+
+        # customdata carries (level, SD, n) so the tooltip can show them.
+        customdata = [
+            [lvl_str, sd_vals[i], n_vals[i]]
+            for i in range(len(f1_levels))
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=x_values,
+                y=y,
+                mode="lines+markers",
+                name=lvl_str,
+                line=dict(color=line_colors[lvl_str], width=2.5),
+                marker=dict(size=8, line=dict(width=1, color="white")),
+                error_y=error_y,
+                customdata=customdata,
+                hovertemplate=(
+                    f"{f1_name}: %{{x}}<br>"
+                    f"{f2_name}: %{{customdata[0]}}<br>"
+                    f"{response_name}: %{{y:.3f}}<br>"
+                    f"SD: %{{customdata[1]}}<br>"
+                    f"n: %{{customdata[2]}}<extra></extra>"
+                ),
+            )
+        )
+
+    # Interaction significance subtitle.
+    subtitle = None
+    if interaction_present and p_value is not None:
+        if p_value < 0.05:
+            verdict = "Significant interaction"
+        elif p_value < 0.10:
+            verdict = "Marginal interaction"
+        else:
+            verdict = "No significant interaction"
+        subtitle = f"{verdict} (interaction p-value = {p_value:g})"
+    elif not interaction_present:
+        subtitle = "Interaction not in model (N/A)"
+    else:
+        subtitle = None
+
+    layout_kwargs: Dict[str, object] = dict(
+        title=dict(
+            text=f"{response_label}  |  {f1_name} × {f2_name}",
+            font=dict(size=14),
+        ),
+        xaxis_title=f1_label,
+        yaxis_title=response_label,
+        xaxis_type="category" if x_is_categorical else "linear",
+        showlegend=True,
+        height=480,
+        legend=dict(title=dict(text=f2_label)),
+        hovermode="closest",
+    )
+    if subtitle:
+        layout_kwargs["title"]["subtitle"] = dict(text=subtitle)
+
+    fig.update_layout(**layout_kwargs)
+    fig.update_traces(connectgaps=False)
 
     return apply_plot_style(fig)
