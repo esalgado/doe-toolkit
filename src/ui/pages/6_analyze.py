@@ -237,21 +237,23 @@ if 'model_terms_per_response' not in st.session_state:
 if selected_response not in st.session_state['model_terms_per_response']:
     # Pre-populate from Step 2 if available, otherwise default to linear
     if 'model_terms' in st.session_state and st.session_state['model_terms']:
-        default_terms = st.session_state['model_terms']
+        default_terms = list(st.session_state['model_terms'])
         st.info("🎯 Using model selected in Step 2. You can modify it below if needed.")
     else:
         default_terms = generate_model_terms(factors, 'linear', include_intercept=True)
         st.info("ℹ️ No model was pre-selected. Defaulting to linear model. You can modify it below.")
     st.session_state['model_terms_per_response'][selected_response] = default_terms
 
-current_terms = st.session_state['model_terms_per_response'][selected_response]
+current_terms = list(st.session_state['model_terms_per_response'][selected_response])
 
 updated_terms = display_model_builder(
     factors=factors, current_terms=current_terms, response_name=selected_response,
     key_prefix=f"model_builder_{selected_response}"
 )
 
-# Force update if terms changed
+# Force update if terms changed. The builder may either mutate the list it was
+# given in place or return a whole new list; compare by value so both cases are
+# caught and trigger a refit.
 if updated_terms != current_terms:
     st.session_state['model_terms_per_response'][selected_response] = updated_terms
     invalidate_downstream_state(from_step=5)

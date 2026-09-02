@@ -450,7 +450,15 @@ def extract_model_terms(lines: List[str]) -> Dict[str, List[str]]:
 
         response_name, _, terms_str = content.partition(",")
         response_name = response_name.strip()
-        terms = [t.strip() for t in terms_str.split("|") if t.strip()]
+        # Excel re-saving can pad metadata lines with trailing commas. Those can
+        # get trapped inside the last pipe-delimited field (e.g. "Mud,,,,,"), so
+        # strip stray leading/trailing commas from each term — a comma is never
+        # a valid character in a patsy factor name or model term.
+        terms = [
+            t.strip().strip(',')
+            for t in terms_str.split("|")
+            if t.strip().strip(',')
+        ]
 
         if response_name and terms:
             model_terms[response_name] = terms
