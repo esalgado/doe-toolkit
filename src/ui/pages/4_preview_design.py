@@ -23,6 +23,7 @@ from src.ui.utils.state_management import (
 )
 from src.core.coding import DesignSpace
 from src.core.factors import Factor
+from src.core.design_validation import validate_design
 from src.core.selection import trim_non_estimable_terms
 from src.ui.utils.csv_parser import generate_doe_csv
 from src.ui.utils.response_definitions import (
@@ -198,6 +199,25 @@ if st.session_state.get('design') is None:
         else:
             seed = None
     
+    # Final gate before generation: confirm the selected design can actually be
+    # built from the current factors.  Step 3 already locks such designs out,
+    # but a project loaded from disk can arrive with a design its factors no
+    # longer support, and factors can be edited on Step 1 at any time.  This
+    # reports the specific problem instead of a traceback from the generator.
+    design_check = validate_design(
+        factors, design_type, model_terms=st.session_state.get('model_terms')
+    )
+    if not design_check.is_valid:
+        st.error(
+            f"❌ **{design_type} cannot be generated from the current factors.**"
+        )
+        for error in design_check.errors:
+            st.error(f"• {error.message}")
+        st.caption(
+            "Adjust the factors on Step 1, or pick a different design on Step 3."
+        )
+        st.stop()
+
     # Validate and display constraints if D-Optimal
     if design_type == "D-Optimal":
         constraints = st.session_state.get('constraints', [])
@@ -227,8 +247,11 @@ if st.session_state.get('design') is None:
                 for warning in warnings:
                     st.warning(warning)
     
-    # Generate button
-    if st.button("🔬 Generate Design", type="primary", width='stretch'):
+    # Generate button.  The second trigger lets the "Generate New Design"
+    # control below rebuild in one click: that button used to only discard the
+    # design and rerun, so rebuilding took two clicks and the label was a lie.
+    _regenerate = st.session_state.pop('_regenerate_requested', False)
+    if st.button("🔬 Generate Design", type="primary", width='stretch') or _regenerate:
         
         with st.spinner("Generating design..."):
             try:
@@ -467,6 +490,36 @@ if st.session_state.get('design') is None:
                     metadata['design_type'] = design_type
                     st.session_state['design_metadata'] = metadata
                 
+                # Record the exact configuration this design was built from.
+                # Step 4 never re-generates on its own, so if Step 3's
+                # configuration is later edited the design on screen silently
+                # becomes stale -- e.g. switching a fractional design from 1/2
+                # (16 runs, Resolution V) to 1/4 leaves the 8-run Res III design
+                # displayed with no indication it no longer matches. The
+                # snapshot lets the display path below detect and report that.
+                # Added after the design_type fixup above: writing it earlier
+                # would make 'design_metadata' present in session state and
+                # cause the Full Factorial local `metadata` dict to be dropped.
+                st.session_state.setdefault('design_metadata', {})[
+                    'config_snapshot'
+                ] = dict(design_config)
+
+                # Bumped on every successful generation, for every design type.
+                # The design matrix table below is keyed off this counter so a
+                # regeneration forces Streamlit to recreate the component. An
+                # unkeyed st.dataframe keeps its existing frontend instance
+                # across the regenerate -> rerun chain and does not repaint when
+                # the data changes: the server sends the new design (verified --
+                # RunOrder and row count arrive updated) but the browser keeps
+                # showing the old table until an unrelated widget interaction
+                # remounts it. Using a counter rather than a hash of the data
+                # also covers regenerating an unchanged configuration, where
+                # the new table is byte-identical and a data-derived key would
+                # not remount anything.
+                st.session_state['_design_generation'] = (
+                    st.session_state.get('_design_generation', 0) + 1
+                )
+
                 st.success(f"✓ Design generated successfully! ({len(design)} runs)")
                 st.rerun()
             
@@ -478,6 +531,41 @@ if st.session_state.get('design') is None:
 else:
     design = st.session_state['design']
     metadata = st.session_state.get('design_metadata', {})
+
+    # --- Stale-configuration check -------------------------------------
+    # The design above was generated from a specific Step 3 configuration.
+    # Step 3 can be edited at any time, and nothing invalidates an existing
+    # design when only the *configuration* changes (invalidate_downstream_state
+    # fires for factor and design-type edits, not for fraction / center points /
+    # replicates / alpha / blocks). Without this check the page shows a design
+    # that no longer matches the settings above it, and the run count and
+    # resolution the user just read on Step 3 appear to be wrong.
+    _snapshot = metadata.get('config_snapshot')
+    if isinstance(_snapshot, dict):
+        _diffs = [
+            (key, _snapshot.get(key), design_config.get(key))
+            for key in sorted(set(_snapshot) | set(design_config))
+            if _snapshot.get(key) != design_config.get(key)
+        ]
+        if _diffs:
+            st.warning(
+                "⚠️ **The design below is out of date.** It was generated from a "
+                "different Step 3 configuration, so its run count and "
+                "resolution do not reflect your current settings."
+            )
+            for _key, _old, _new in _diffs:
+                st.warning(f"• `{_key}`: generated with `{_old}`, now `{_new}`")
+            if metadata.get('resolution') is not None:
+                st.info(
+                    f"The design on screen is {len(design)} runs at Resolution "
+                    f"{metadata['resolution']}. Click **🔄 Generate New Design** "
+                    f"to rebuild it from the current configuration."
+                )
+            else:
+                st.info(
+                    f"Click **🔄 Generate New Design** to rebuild it from the "
+                    f"current configuration."
+                )
 
     # Authoritative estimability hand-off: the design's *observed* per-factor
     # level counts decide which quadratic terms are estimable.  A factor seen
@@ -617,7 +705,13 @@ else:
     else:
         preview_df = design
     
-    st.dataframe(preview_df, width='stretch')
+    # Keyed off the generation counter so a regeneration recreates the
+    # component; see the _design_generation comment in the generation path.
+    st.dataframe(
+        preview_df,
+        key=f"design_preview_gen{st.session_state.get('_design_generation', 0)}",
+        width='stretch',
+    )
     
     # Additional info
     if metadata.get('generators'):
@@ -663,7 +757,13 @@ else:
             if 'WholePlot' in design.columns:
                 wp_counts = design['WholePlot'].value_counts().sort_index()
                 st.write("**Runs per Whole-Plot:**")
-                st.dataframe(wp_counts.to_frame('Runs'))
+                st.dataframe(
+                    wp_counts.to_frame('Runs'),
+                    key=(
+                        "splitplot_wholeplot_counts_"
+                        f"gen{st.session_state.get('_design_generation', 0)}"
+                    ),
+                )
     
     st.divider()
     
@@ -755,9 +855,14 @@ else:
     
     with col1:
         if st.button("🔄 Generate New Design", width='stretch'):
+            # Rebuild from the *current* Step 3 configuration in one click.
+            # Clearing the design and stopping here meant the user had to
+            # press "Generate Design" a second time, and a stale design was
+            # left on screen in between.
             st.session_state['design'] = None
             st.session_state['design_metadata'] = {}
             invalidate_downstream_state(from_step=3)
+            st.session_state['_regenerate_requested'] = True
             st.rerun()
     
     with col2:

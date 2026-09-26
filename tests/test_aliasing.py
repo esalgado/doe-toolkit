@@ -265,7 +265,7 @@ class TestStandardGenerators:
     
     def test_common_designs_exist(self):
         """Test that common designs are in library."""
-        # 2^(5-1) Resolution V
+        assert (3, 1, 3) in STANDARD_GENERATORS
         assert (5, 1, 5) in STANDARD_GENERATORS
         
         # 2^(7-3) Resolution IV
@@ -281,6 +281,20 @@ class TestStandardGenerators:
         assert result is not None
         assert result == [("E", "ABCD")]
     
+    @pytest.mark.parametrize(
+        ("k", "p", "resolution", "expected_generated_factors"),
+        [
+            (9, 4, 4, ("F", "G", "H", "I")),
+            (10, 4, 4, ("G", "H", "I", "J")),
+        ],
+    )
+    def test_high_factor_generated_symbols(
+        self, k, p, resolution, expected_generated_factors
+    ):
+        generators = get_standard_generators(k, p, resolution)
+
+        assert tuple(factor for factor, _ in generators) == expected_generated_factors
+
     def test_get_nonexistent_design(self):
         """Test that nonexistent design returns None."""
         result = get_standard_generators(20, 10, 5)

@@ -94,6 +94,36 @@ def add_version_footer() -> None:
     st.sidebar.caption(f"DOE Toolkit v{__version__}")
 
 
+def _warn_if_design_unbuildable() -> None:
+    """
+    Note in the save panel that the current design cannot be generated.
+
+    Saving stays available either way; this only makes the consequence visible
+    before the file leaves the app.
+    """
+    design_type = st.session_state.get('design_type')
+    factors = st.session_state.get('factors')
+    if not design_type or not factors:
+        return
+
+    from src.core.design_validation import validate_design
+
+    try:
+        result = validate_design(factors, design_type)
+    except KeyError:
+        return
+
+    if result.is_valid:
+        return
+
+    st.sidebar.warning(
+        f"⚠️ **{design_type} cannot be generated from the current factors.** "
+        f"The project will still save exactly as-is."
+    )
+    for issue in result.errors:
+        st.sidebar.caption(f"• {issue.message}")
+
+
 def add_export_section():
     """
     Add export buttons to sidebar.
@@ -115,6 +145,11 @@ def add_export_section():
             project_json = create_project_file()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
+            # Saving is always allowed, including for a project that cannot be
+            # generated.  The warning is informational: some work-in-progress
+            # states are worth persisting, and the file round-trips faithfully.
+            _warn_if_design_unbuildable()
+
             st.sidebar.download_button(
                 "📥 Download .doeproject",
                 data=project_json,

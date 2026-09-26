@@ -20,6 +20,7 @@ from src.core.factors import Factor
 # Standard generators from Box-Hunter-Hunter and Montgomery
 STANDARD_GENERATORS = {
     # 2^(k-1) half-fractions
+    (3, 1, 3): [("C", "AB")],
     (4, 1, 4): [("D", "ABC")],
     (5, 1, 5): [("E", "ABCD")],
     (6, 1, 6): [("F", "ABCDE")],
@@ -38,8 +39,8 @@ STANDARD_GENERATORS = {
     
     # 2^(k-4) sixteenth-fractions
     (8, 4, 4): [("E", "BCD"), ("F", "ACD"), ("G", "ABC"), ("H", "ABD")],
-    (9, 4, 4): [("F", "ABCD"), ("G", "ABCE"), ("H", "ABDE"), ("J", "BCDE")],
-    (10, 4, 4): [("G", "ABCD"), ("H", "ABEF"), ("J", "ACEF"), ("K", "BCEF")],
+    (9, 4, 4): [("F", "ABCD"), ("G", "ABCE"), ("H", "ABDE"), ("I", "BCDE")],
+    (10, 4, 4): [("G", "ABCD"), ("H", "ABEF"), ("I", "ACEF"), ("J", "BCEF")],
 }
 
 
