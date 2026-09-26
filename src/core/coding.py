@@ -139,7 +139,7 @@ def encode_design(
     
     for factor in factors:
         if factor.is_continuous() and factor.name in encoded.columns:
-            min_val, max_val = factor.levels
+            min_val, max_val = min(factor.levels), max(factor.levels)
             encoded[factor.name] = encoded[factor.name].apply(
                 lambda x: encode_value(x, min_val, max_val)
             )
@@ -189,7 +189,7 @@ def decode_design(
     
     for factor in factors:
         if factor.is_continuous() and factor.name in decoded.columns:
-            min_val, max_val = factor.levels
+            min_val, max_val = min(factor.levels), max(factor.levels)
             decoded[factor.name] = decoded[factor.name].apply(
                 lambda x: decode_value(x, min_val, max_val)
             )
@@ -241,7 +241,7 @@ def is_design_coded(
     for factor in factors:
         if factor.is_continuous() and factor.name in design.columns:
             values = design[factor.name].values
-            min_val, max_val = factor.levels
+            min_val, max_val = min(factor.levels), max(factor.levels)
 
             coded_min = -1 - tolerance
             coded_max = 1 + tolerance
@@ -288,7 +288,7 @@ def encode_settings_dict(
     
     for factor in factors:
         if factor.is_continuous() and factor.name in encoded:
-            min_val, max_val = factor.levels
+            min_val, max_val = min(factor.levels), max(factor.levels)
             encoded[factor.name] = encode_value(
                 encoded[factor.name], min_val, max_val
             )
@@ -325,7 +325,7 @@ def decode_settings_dict(
     
     for factor in factors:
         if factor.is_continuous() and factor.name in decoded:
-            min_val, max_val = factor.levels
+            min_val, max_val = min(factor.levels), max(factor.levels)
             decoded[factor.name] = decode_value(
                 decoded[factor.name], min_val, max_val
             )
@@ -463,7 +463,7 @@ class DesignSpace:
         specs: Dict[str, CodingSpec] = {}
         for factor in factors:
             if factor.factor_type == FactorType.CONTINUOUS:
-                low, high = factor.levels
+                low, high = min(factor.levels), max(factor.levels)
                 center = (low + high) / 2.0
                 scale = (high - low) / 2.0
                 specs[factor.name] = CodingSpec(

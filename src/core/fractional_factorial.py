@@ -157,13 +157,15 @@ class FractionalFactorial:
             raise ValueError("Fractional factorial requires at least 3 factors")
         
         for factor in factors:
-            if not factor.is_continuous() and not factor.is_discrete_numeric():
+            if (not factor.is_continuous()
+                    and not factor.is_discrete_numeric()
+                    and not factor.is_categorical()):
                 raise ValueError(
-                    f"Factor '{factor.name}' must be continuous or discrete numeric. "
-                    f"Categorical factors not supported."
+                    f"Factor '{factor.name}' must be continuous, discrete numeric, "
+                    f"or categorical. Got type '{factor.factor_type.value}'."
                 )
             
-            if factor.is_discrete_numeric() and len(factor.levels) != 2:
+            if len(factor.levels) != 2:
                 raise ValueError(
                     f"Factor '{factor.name}' must have exactly 2 levels for fractional factorial, "
                     f"got {len(factor.levels)}. Fractional factorials require 2-level designs. "
@@ -276,14 +278,15 @@ class FractionalFactorial:
         # representation; nothing else decodes the design).
         design = _decode_design(design, self.factors)
 
-        # Discrete-numeric factors were carried on the coded grid; restore
-        # their two declared natural levels.
+        # Discrete-numeric and categorical factors were carried on the coded
+        # grid; restore their two declared natural levels (or labels).
         for factor in self.factors:
-            if factor.is_discrete_numeric() and factor.name in design.columns:
-                low, high = factor.levels
-                design[factor.name] = design[factor.name].replace(
-                    {-1.0: low, 1.0: high}
-                )
+            if factor.is_continuous() or factor.name not in design.columns:
+                continue
+            low, high = factor.levels
+            design[factor.name] = design[factor.name].replace(
+                {-1.0: low, 1.0: high}
+            )
 
         return design
     

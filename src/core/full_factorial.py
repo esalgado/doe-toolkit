@@ -168,7 +168,18 @@ def _generate_factorial_points(factors: List[Factor]) -> pd.DataFrame:
         factor_names.append(factor.name)
         
         if factor.is_continuous():
-            # For continuous factors, use coded levels: -1 (low), +1 (high)
+            # Continuous factors are laid out on the coded [-1, +1] grid and
+            # decoded to [min, max] afterwards, which is a 2-level
+            # construction.  A continuous factor declaring more levels used to
+            # be silently truncated to its extremes here, so refuse it instead.
+            if len(factor.levels) != 2:
+                raise ValueError(
+                    f"Factor '{factor.name}' is continuous with "
+                    f"{len(factor.levels)} levels. Full Factorial lays continuous "
+                    f"factors out on a 2-level coded grid, so exactly 2 levels are "
+                    f"required. Use D-Optimal or a response surface design to place "
+                    f"a multi-level continuous factor."
+                )
             factor_levels.append([-1, 1])
         elif factor.is_discrete_numeric():
             # For discrete numeric, use actual values
