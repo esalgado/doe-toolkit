@@ -23,6 +23,7 @@ from src.ui.utils.state_management import (
 )
 from src.core.coding import DesignSpace
 from src.core.factors import Factor
+from src.core.design_validation import validate_design
 from src.core.selection import trim_non_estimable_terms
 from src.ui.utils.csv_parser import generate_doe_csv
 from src.ui.utils.response_definitions import (
@@ -198,6 +199,25 @@ if st.session_state.get('design') is None:
         else:
             seed = None
     
+    # Final gate before generation: confirm the selected design can actually be
+    # built from the current factors.  Step 3 already locks such designs out,
+    # but a project loaded from disk can arrive with a design its factors no
+    # longer support, and factors can be edited on Step 1 at any time.  This
+    # reports the specific problem instead of a traceback from the generator.
+    design_check = validate_design(
+        factors, design_type, model_terms=st.session_state.get('model_terms')
+    )
+    if not design_check.is_valid:
+        st.error(
+            f"❌ **{design_type} cannot be generated from the current factors.**"
+        )
+        for error in design_check.errors:
+            st.error(f"• {error.message}")
+        st.caption(
+            "Adjust the factors on Step 1, or pick a different design on Step 3."
+        )
+        st.stop()
+
     # Validate and display constraints if D-Optimal
     if design_type == "D-Optimal":
         constraints = st.session_state.get('constraints', [])

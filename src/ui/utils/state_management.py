@@ -639,6 +639,60 @@ def create_project_file() -> str:
     return json.dumps(project, indent=2)
 
 
+def _report_loaded_design_fitness(factors, design_type) -> None:
+    """
+    Warn when a loaded project's factors no longer fit its saved design.
+
+    A project can legitimately be saved in a state the current generators
+    cannot build -- a factor may have been given a third level, or a design
+    type may have been selected before its constraints applied.  Loading never
+    rewrites the saved design; this only surfaces what will happen when the
+    user tries to generate, so the mismatch is not discovered as a traceback
+    several steps later.
+
+    Parameters
+    ----------
+    factors : list
+        Restored factors, already sanitized.
+    design_type : str or None
+        Design type as stored in the project file.
+    """
+    if not design_type or not factors:
+        return
+
+    from src.core.design_validation import validate_design
+
+    try:
+        result = validate_design(factors, design_type)
+    except KeyError:
+        # A design type this build no longer knows about.  Preserved as saved;
+        # nothing to validate against.
+        st.warning(
+            f"ℹ️ Project was saved with design type '{design_type}', which this "
+            f"version does not recognize. The value has been kept as saved."
+        )
+        return
+
+    if result.is_valid:
+        for issue in result.warnings:
+            st.warning(f"⚠️ {issue.message}")
+        return
+
+    st.error(
+        f"❌ **This project's factors do not support its saved design "
+        f"({design_type}).**"
+    )
+    for issue in result.errors:
+        st.error(f"• {issue.message}")
+    for issue in result.warnings:
+        st.warning(f"⚠️ {issue.message}")
+    st.info(
+        "💡 The design type and its configuration were loaded exactly as saved. "
+        "Return to Step 3 to pick a different design, or Step 1 to adjust the "
+        "factors, before generating."
+    )
+
+
 def load_project_file(file_content: str) -> Optional[int]:
     """
     Load project from JSON file content with factor name sanitization.
@@ -747,6 +801,12 @@ def load_project_file(file_content: str) -> Optional[int]:
     st.session_state['design_config'] = project.get('design_config', {})
     st.session_state['design_metadata'] = project.get('design_metadata', {})
     
+    # Report any mismatch between the restored factors and the saved design.
+    # Nothing is changed here: design_type and design_config stay exactly as
+    # saved so the project round-trips faithfully, and correcting the factors
+    # or the design choice is the user's decision.
+    _report_loaded_design_fitness(factors, st.session_state['design_type'])
+
     # Restore design if exists
     # Note: Design column names should match sanitized factor names
     if 'design' in project:

@@ -18,8 +18,15 @@ from src.ui.utils.state_management import (
     invalidate_downstream_state
 )
 from src.ui.components.model_builder import display_model_builder
+from src.core.design_validation import DESIGN_TYPES, validate_design
 
 # ==================== PAGE CONFIG ====================
+
+# The two response surface designs are presented as one row on the
+# compatibility panel.  When the whole group is blocked, the blocked list must
+# name both designs -- otherwise Box-Behnken disappears from the panel without
+# ever being reported as unusable.
+RSM_GROUP_LABEL = "Response Surface (CCD, Box-Behnken)"
 
 st.set_page_config(
     page_title="Select Model - DOE Toolkit",
@@ -146,10 +153,6 @@ has_interactions = any('*' in t and not t.startswith('I(') for t in terms)
 has_quadratic = any(t.startswith('I(') and '**2' in t for t in terms)
 has_cubic_or_higher = any(t.startswith('I(') and '**' in t and '**2' not in t for t in terms)
 
-n_factors = len(factors)
-continuous_factors = [f for f in factors if f.is_continuous()]
-n_continuous = len(continuous_factors)
-
 # Determine model complexity
 if has_cubic_or_higher:
     model_complexity = "Very High (Cubic+ terms)"
@@ -172,35 +175,85 @@ with col2:
     
     compatible = []
     warnings = []
+    blocked = []
     
-    # Full Factorial
-    if n_factors <= 5:
-        compatible.append("✅ **Full Factorial** - Can fit any model")
-    else:
-        warnings.append("⚠️ **Full Factorial** - May need many runs (2^{})".format(n_factors))
+    # Factor feasibility comes from the shared validation service, so this
+    # panel agrees with what Step 3 will actually let you build.  The model
+    # shape (curvature, interactions) is a separate, softer axis layered on
+    # top below.
+    feasible = {
+        name: validate_design(factors, name, model_terms=terms)
+        for name in DESIGN_TYPES
+    }
     
-    # Fractional Factorial
-    if not has_quadratic and n_factors >= 4:
-        compatible.append("✅ **Fractional Factorial** - Check resolution for interactions")
-    elif has_quadratic:
-        warnings.append("❌ **Fractional Factorial** - Cannot fit quadratic terms")
+    def _rsm_label(members, feasible):
+        """Name the response surface designs that are actually available.
+
+        Only meaningful on the available path: when every member is usable the
+        merged group can be called "CCD, Box-Behnken", and when only CCD
+        survives the block below never runs for this group.
+        """
+        if all(feasible[m].is_valid for m in members):
+            return RSM_GROUP_LABEL
+        return "Response Surface (CCD)"
     
-    # Response Surface (CCD, Box-Behnken)
-    if has_quadratic and n_continuous >= 2:
-        compatible.append("✅ **Response Surface (CCD, Box-Behnken)** - Designed for quadratic models")
-    elif has_quadratic and n_continuous < 2:
-        warnings.append("⚠️ **Response Surface** - Requires 2+ continuous factors")
-    elif not has_quadratic:
-        warnings.append("⚠️ **Response Surface** - Overqualified (no quadratic terms in model)")
+    def _note(design_name):
+        """Model-shape advice for a design whose factors are feasible."""
+        if design_name == "Full Factorial":
+            return "Can fit any model"
+        if design_name == "Fractional Factorial":
+            return "Check resolution for interactions"
+        if design_name.startswith("Response Surface"):
+            return "Designed for quadratic models"
+        if design_name == "D-Optimal":
+            return "Can fit this exact model efficiently"
+        return "Good for main effects screening"
     
-    # D-Optimal
-    compatible.append("✅ **D-Optimal** - Can fit this exact model efficiently")
+    # The two response surface designs differ only in their factor-count
+    # minimum, so they are presented as one row rather than two near-identical
+    # bullets.  Order matches Step 3.
+    groups = [
+        (["Full Factorial"], "Full Factorial"),
+        (["Fractional Factorial"], "Fractional Factorial"),
+        (["Response Surface (CCD)", "Response Surface (Box-Behnken)"], None),
+        (["D-Optimal"], "D-Optimal"),
+        (["Latin Hypercube"], "Latin Hypercube"),
+        (["Split-Plot"], "Split-Plot"),
+    ]
     
-    # Latin Hypercube
-    if not has_interactions and not has_quadratic:
-        compatible.append("✅ **Latin Hypercube** - Good for main effects screening")
-    else:
-        warnings.append("⚠️ **Latin Hypercube** - Better for screening, not interaction/RSM models")
+    for members, label in groups:
+        usable = [m for m in members if feasible[m].is_valid]
+        if not usable:
+            # Hard blocker: no generator in this group can be built.  The
+            # reason is resolved now, while the result object is in hand.
+            blocked.append((
+                label or RSM_GROUP_LABEL,
+                feasible[members[0]].reason(),
+            ))
+            continue
+
+        if label is None:
+            label = _rsm_label(members, feasible)
+        lead = usable[0]
+
+        if has_quadratic and lead in ("Fractional Factorial", "Latin Hypercube"):
+            warnings.append(f"⚠️ **{label}** - Cannot fit quadratic terms")
+            continue
+        if lead.startswith("Response Surface") and not has_quadratic:
+            warnings.append(
+                f"⚠️ **{label}** - Overqualified (no quadratic terms in model)"
+            )
+            continue
+        if lead == "Latin Hypercube" and has_interactions:
+            warnings.append(
+                f"⚠️ **{label}** - Better for screening, not interaction models"
+            )
+            continue
+        compatible.append(f"✅ **{label}** - {_note(lead)}")
+        # Non-blocking caveats from the service, e.g. a stratified Latin
+        # Hypercube over a categorical factor.
+        for issue in feasible[lead].warnings:
+            warnings.append(f"⚠️ **{label}** - {issue.message}")
     
     for item in compatible:
         st.markdown(item)
@@ -209,6 +262,11 @@ with col2:
         st.markdown("**Compatibility Notes:**")
         for item in warnings:
             st.markdown(item)
+
+    if blocked:
+        st.markdown("**Unavailable for the current factors:**")
+        for blocked_label, reason in blocked:
+            st.markdown(f"❌ **{blocked_label}** - {reason}")
 
 # ==================== MODEL SUMMARY ====================
 

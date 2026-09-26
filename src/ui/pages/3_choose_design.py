@@ -19,12 +19,61 @@ from src.ui.utils.state_management import (
     invalidate_downstream_state
 )
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
-from src.core.aliasing import STANDARD_GENERATORS
+from src.core.fractional_factorial import FractionalFactorial
+from src.core.design_validation import validate_design, warnings_for
 from src.core.selection import trim_non_estimable_terms
 from src.ui.components.constraint_builder import (
     show_constraint_builder,
     show_constraint_help
 )
+
+_RESOLUTION_PRESENTATION = {
+    3: (
+        "III", "Screening Only", "🟥", "#FDECEC", "#B42318", "#7A271A",
+        "Main effects may be confounded with two-factor interactions. "
+        "Recommended only when run count is highly constrained."
+    ),
+    4: (
+        "IV", "Good", "🟨", "#FFF4CC", "#B54708", "#7A2E0E",
+        "Main effects are clear. Some two-factor interactions may be aliased "
+        "with other interactions. Suitable for screening studies."
+    ),
+    5: (
+        "V", "Excellent", "🟩", "#EAF7EE", "#2E7D32", "#1B5E20",
+        "Main effects and two-factor interactions are estimable, assuming "
+        "higher-order interactions are negligible. Suitable for "
+        "characterization studies."
+    ),
+    6: (
+        "VI", "Excellent", "🟩", "#EAF7EE", "#2E7D32", "#1B5E20",
+        "Very high resolution design with minimal aliasing among low-order effects."
+    ),
+    7: (
+        "VII", "Excellent", "🟩", "#EAF7EE", "#2E7D32", "#1B5E20",
+        "Very high resolution design with minimal aliasing among low-order effects."
+    )
+}
+
+
+def _render_resolution_card(resolution, total_runs):
+    roman, quality, icon, background, border, text, interpretation = (
+        _RESOLUTION_PRESENTATION[resolution]
+    )
+    with st.container(border=True):
+        badge_col, details_col = st.columns([3, 1])
+        with badge_col:
+            st.markdown(
+                f'<span style="display:inline-block;background:{background};'
+                f'color:{text};border:1px solid {border};border-radius:999px;'
+                f'padding:4px 10px;font-weight:700;font-size:0.9rem">'
+                f'{icon}&nbsp; Resolution {roman} ({quality})</span>',
+                unsafe_allow_html=True
+            )
+            st.caption(interpretation)
+        with details_col:
+            st.markdown(f"**Quality:** {quality}")
+            st.markdown(f"**Estimated runs:** {total_runs}")
+
 
 # Initialize state
 initialize_session_state()
@@ -162,54 +211,53 @@ st.divider()
 st.subheader("Select Design Type")
 
 # Determine available designs based on factors
-all_continuous = all(f.is_continuous() for f in factors)
-has_categorical = any(f.is_categorical() for f in factors)
-has_hard_factors = any(f.changeability != ChangeabilityLevel.EASY for f in factors)
+#
+# Availability is not decided here.  The shared validation service mirrors the
+# constraints enforced by the generators in src/core/, so the UI cannot offer a
+# design the backend will refuse, nor hide one it can build.  Adding a design
+# type means updating src/core/design_validation.py, not this page.
 
 # Design type descriptions
 design_options = {
     "Full Factorial": {
-        "enabled": True,
         "description": "All possible combinations of factor levels. Best for small experiments.",
         "when_to_use": "2-4 factors, want to estimate all interactions",
         "runs": "2^k for 2-level factors (grows exponentially)"
     },
     "Fractional Factorial": {
-        "enabled": len(factors) >= 4,
         "description": "Subset of full factorial. Efficient screening for many factors.",
-        "when_to_use": "4+ factors, willing to sacrifice some interactions",
+        "when_to_use": "3+ two-level factors, willing to sacrifice some interactions",
         "runs": "2^(k-p) where p is the fraction"
     },
     "Response Surface (CCD)": {
-        "enabled": all_continuous and len(factors) >= 2,
         "description": "Central Composite Design for quadratic models and optimization.",
         "when_to_use": "Continuous factors, need to model curvature",
         "runs": "2^k + 2k + center points"
     },
     "Response Surface (Box-Behnken)": {
-        "enabled": all_continuous and len(factors) >= 3,
         "description": "Efficient response surface design (no corner points).",
         "when_to_use": "3+ continuous factors, avoid extreme combinations",
         "runs": "Fewer than CCD, no axial points at ±α"
     },
     "D-Optimal": {
-        "enabled": True,
         "description": "Computer-generated optimal design with constraints.",
         "when_to_use": "Constrained design space, irregular regions, mixed factors",
         "runs": "User-specified (typically p+1 to 2p where p=parameters)"
     },
     "Latin Hypercube": {
-        "enabled": all_continuous,
         "description": "Space-filling design for exploration and screening.",
         "when_to_use": "Initial exploration, many factors, computer experiments",
         "runs": "User-specified (flexible)"
     },
     "Split-Plot": {
-        "enabled": has_hard_factors,
         "description": "Hierarchical design for hard-to-change factors.",
         "when_to_use": "Some factors are expensive or slow to change",
         "runs": "Based on whole-plot structure"
     }
+}
+
+design_validity = {
+    name: validate_design(factors, name) for name in design_options
 }
 
 # Display design options
@@ -217,7 +265,7 @@ design_choice = None
 current_design = st.session_state.get('design_type')
 
 for design_name, design_info in design_options.items():
-    if design_info["enabled"]:
+    if design_validity[design_name].is_valid:
         # Check if this is the selected design
         is_selected = (design_name == current_design)
         
@@ -234,6 +282,11 @@ for design_name, design_info in design_options.items():
             
             if is_selected:
                 st.info("🎯 This design is currently selected. Modify configuration below or choose a different design.")
+
+            # Caveats that do not block selection, e.g. a stratified Latin
+            # Hypercube over a categorical factor.
+            for warning in design_validity[design_name].warnings:
+                st.warning(warning.message)
             
             if st.button(f"Select {design_name}", key=f"select_{design_name}", disabled=is_selected, type="primary" if not is_selected else "secondary"):
                 design_choice = design_name
@@ -241,17 +294,23 @@ for design_name, design_info in design_options.items():
         with st.expander(f"🔒 {design_name} (Not Available)", expanded=False):
             st.markdown(f"**{design_info['description']}**")
             
-            # Explain why not available
-            if design_name == "Fractional Factorial" and len(factors) < 4:
-                st.warning("Requires at least 4 factors")
-            elif "Response Surface" in design_name and not all_continuous:
-                st.warning("Requires all continuous factors")
-            elif design_name == "Response Surface (Box-Behnken)" and len(factors) < 3:
-                st.warning("Requires at least 3 factors")
-            elif design_name == "Split-Plot" and not has_hard_factors:
-                st.warning("Requires at least one hard-to-change factor")
-            elif design_name == "Latin Hypercube" and not all_continuous:
-                st.warning("Requires all continuous factors")
+            # Explain why not available, using the same rules that locked it.
+            for error in design_validity[design_name].errors:
+                st.warning(error.message)
+
+            # A project can be loaded with a design its own factors no longer
+            # support (e.g. a factor gained a level after the project was
+            # saved).  The selection and its configuration are preserved
+            # untouched -- switching is the user's call -- but the mismatch is
+            # called out here so it is not silently carried into generation.
+            if design_name == current_design:
+                st.error(
+                    f"⚠️ **{design_name} is the design saved in this project, but "
+                    f"the current factors do not support it.** The design type and "
+                    f"its configuration have been kept as saved. Select a "
+                    f"different design above, or adjust the factors back, to "
+                    f"generate a design."
+                )
 
 # If user selected a design, show configuration
 if design_choice:
@@ -266,6 +325,13 @@ if st.session_state.get('design_type'):
     
     design_type = st.session_state['design_type']
     
+    # Whether the selected design can actually be built from these factors.
+    # The configuration widgets below stay rendered and editable either way, so
+    # a loaded project's design is preserved as saved -- but the generator
+    # previews further down raise ValueError for exactly this reason, and their
+    # handlers would report it as a missing generator set.
+    selected_design_valid = design_validity[design_type].is_valid
+
     # Configuration forms for each design type
     if design_type == "Full Factorial":
         st.markdown("**Full Factorial Configuration**")
@@ -339,44 +405,55 @@ if st.session_state.get('design_type'):
         
         k = len(factors)
         
-        # Fraction selection
         fractions = ["1/2", "1/4", "1/8", "1/16"]
         valid_fractions = []
-        
+
         for frac in fractions:
-            p = int(frac.split('/')[1]).bit_length() - 1
-            if k - p >= 3:
+            fraction_p = int(frac.split('/')[1]).bit_length() - 1
+            if k - fraction_p >= 3 or (k == 3 and frac == "1/2"):
                 valid_fractions.append(frac)
-        
+
+        # Open the widget on the fraction this project is actually configured
+        # for.  design_config is restored verbatim on project load and is never
+        # cleared by invalidate_downstream_state, but a selectbox with no
+        # `index` always opens at 0 ('1/2'). That made the widget and the
+        # stored configuration disagree -- the widget showed one fraction while
+        # Step 4 generated from another. Fall back to 0 when the stored
+        # fraction is no longer valid for this k.
+        _stored_fraction = st.session_state.get('design_config', {}).get('fraction')
+        _start_index = (
+            valid_fractions.index(_stored_fraction)
+            if _stored_fraction in valid_fractions
+            else 0
+        )
         fraction = st.selectbox(
             "Fraction Size",
             valid_fractions,
+            index=_start_index,
             help="Smaller fractions = fewer runs but more aliasing"
         )
-        
+
         p = int(fraction.split('/')[1]).bit_length() - 1
-        achievable = sorted({
-            res for (kk, pp, res) in STANDARD_GENERATORS if kk == k and pp == p
-        })
-        
-        # Generator specification
+        total_runs = 2 ** (k - p)
+        achieved_resolution = None
+
         generator_mode = st.radio(
             "Generator Specification",
             ["Standard (Recommended)", "Custom"],
             help="Standard generators from Montgomery/Box-Hunter-Hunter"
         )
-        
+
         if generator_mode == "Custom":
             st.warning("Custom generators require knowledge of alias structure")
-            
+
             generators_input = st.text_area(
                 f"Generators (one per line, need {p})",
                 placeholder="E=ABCD\nF=ABC",
                 help="Format: NewFactor=Expression (e.g., E=ABCD)"
             )
-            
+
             custom_generators = [g.strip() for g in generators_input.split('\n') if g.strip()]
-            
+
             min_options = ["No minimum (as generated)"] + [f"Resolution {res}" for res in range(3, 8)]
             min_choice = st.selectbox(
                 "Minimum Resolution (optional)",
@@ -386,67 +463,90 @@ if st.session_state.get('design_type'):
                      "or the design will be rejected."
             )
             resolution = None if min_choice.startswith("No minimum") else int(min_choice.split()[-1])
-            
-            # Live validation: report whether the entered generators meet the requirement
+
             if custom_generators:
                 try:
-                    from src.core.fractional_factorial import FractionalFactorial
                     trial = FractionalFactorial(
                         factors=factors,
                         fraction=fraction,
                         resolution=resolution,
                         generators=custom_generators
                     )
-                    achieved = trial.resolution
-                    if resolution is not None and achieved < resolution:
+                    achieved_resolution = trial.resolution
+                    if resolution is not None and achieved_resolution < resolution:
                         st.error(
-                            f"Your generators achieve Resolution {achieved}, "
+                            f"Your generators achieve Resolution {achieved_resolution}, "
                             f"below the selected minimum Resolution {resolution}."
                         )
                     else:
-                        message = f"Generators valid — achieve Resolution {achieved}."
+                        message = f"Generators valid — achieve Resolution {achieved_resolution}."
                         if resolution is not None:
                             message += " Meets the selected minimum."
                         st.success(message)
                 except Exception as e:
                     st.error(f"Invalid generators: {e}")
-        
-        else:  # Standard (Recommended)
-            if achievable:
-                st.info(
-                    f"**Expected resolution:** {achievable[-1]} "
-                    f"(highest standard resolution for {k} factors at a {fraction} fraction)."
+
+        else:
+            try:
+                standard_preview = FractionalFactorial(
+                    factors=factors,
+                    fraction=fraction
                 )
-            else:
-                current_runs = 2 ** (k - p)
-                alternatives = []
-                for alt_frac in valid_fractions:
-                    alt_p = int(alt_frac.split('/')[1]).bit_length() - 1
-                    alt_res = sorted({
-                        res for (kk, pp, res) in STANDARD_GENERATORS
-                        if kk == k and pp == alt_p
-                    })
-                    if alt_p != p and alt_res:
-                        alternatives.append(
-                            f"{alt_frac} → {2 ** (k - alt_p)} runs (Res {alt_res[-1]})"
-                        )
-                
-                guidance = (
-                    f"No standard generator set exists for {k} factors at "
-                    f"a {fraction} fraction ({current_runs} runs)."
-                )
-                if alternatives:
-                    guidance += (
-                        " Standard sets are available at: "
-                        + ", ".join(alternatives)
-                        + ". Choose one of these fractions, or switch to Custom generators."
+                achieved_resolution = standard_preview.resolution
+            except ValueError:
+                if not selected_design_valid:
+                    # The ValueError is the blocking factor issue already
+                    # reported above, not a missing generator set. Reporting it
+                    # as the latter would send the user hunting for a fraction
+                    # that can never work for these factors.
+                    st.warning(
+                        "Design preview paused: this design cannot be generated "
+                        "from the current factors (see the reason above). "
+                        "Resolve that first and the resolution badge will update."
                     )
                 else:
-                    guidance += " Switch to Custom generators to build the design."
-                st.warning(guidance)
-            resolution = None  # auto-select highest resolution available
+                    alternatives = []
+                    for alt_frac in valid_fractions:
+                        alt_p = int(alt_frac.split('/')[1]).bit_length() - 1
+                        if alt_p == p:
+                            continue
+                        try:
+                            alt_resolution = FractionalFactorial(
+                                factors=factors,
+                                fraction=alt_frac
+                            ).resolution
+                        except ValueError:
+                            continue
+                        alternatives.append(
+                            f"{alt_frac} → {2 ** (k - alt_p)} runs (Res {alt_resolution})"
+                        )
+
+                    guidance = (
+                        f"No standard generator set exists for {k} factors at "
+                        f"a {fraction} fraction ({total_runs} runs)."
+                    )
+                    if alternatives:
+                        guidance += (
+                            " Standard sets are available at: "
+                            + ", ".join(alternatives)
+                            + ". Choose one of these fractions, or switch to Custom generators."
+                        )
+                    else:
+                        guidance += " Switch to Custom generators to build the design."
+                    st.warning(guidance)
+            resolution = None
             custom_generators = None
-        
+
+        if achieved_resolution is not None:
+            _render_resolution_card(achieved_resolution, total_runs)
+            if k == 3:
+                saved_runs = 2 ** k - total_runs
+                st.warning(
+                    f"Only {saved_runs} runs are saved compared with the full "
+                    "factorial. Consider a full factorial unless experimental "
+                    "cost is extremely constrained."
+                )
+
         n_blocks = st.number_input(
             "Number of Blocks",
             min_value=1,
@@ -454,10 +554,9 @@ if st.session_state.get('design_type'):
             value=1,
             help="Divide runs into blocks to account for nuisance variation. Use 1 for no blocking."
         )
-        
+
         randomize = st.checkbox("Randomize Run Order", value=True)
-        
-        # Store config
+
         st.session_state['design_config'] = {
             'fraction': fraction,
             'resolution': resolution,
@@ -466,10 +565,9 @@ if st.session_state.get('design_type'):
             'n_blocks': n_blocks,
             'randomize': randomize
         }
-        
-        # Estimate runs
-        total_runs = 2 ** (k - p)
-        st.info(f"**Estimated runs:** {total_runs}")
+
+        if achieved_resolution is None:
+            st.info(f"**Estimated runs:** {total_runs}")
     
     elif design_type in ["Response Surface (CCD)", "Response Surface (Box-Behnken)"]:
         st.markdown(f"**{design_type} Configuration**")
@@ -525,7 +623,13 @@ if st.session_state.get('design_type'):
                     f"**{_preview_ccd.alpha:.4f}**"
                 )
             except Exception as e:
-                st.caption(f"α unavailable: {e}")
+                if not selected_design_valid:
+                    st.caption(
+                        "α unavailable: this design cannot be generated from "
+                        "the current factors (see the reason above)."
+                    )
+                else:
+                    st.caption(f"α unavailable: {e}")
         
         randomize = st.checkbox("Randomize Run Order", value=True)
         st.session_state['design_config']['randomize'] = randomize
